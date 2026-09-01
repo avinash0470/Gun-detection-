@@ -1,0 +1,20 @@
+# Gun Detection Pipeline Configuration Settings
+
+detector:
+  primary_conf_threshold: 0.25      # Primary firearm detection confidence threshold (best_gun_11m.pt)
+  secondary_conf_threshold: 0.20    # Secondary detector confidence threshold
+  person_conf_threshold: 0.30       # Person tracking detection confidence threshold (yolo11m.pt)
+  watch_state_tolerance: 0.15       # Threshold difference triggering "Watch State"
+
+vector_verify:
+  similarity_threshold: 0.70        # Vector similarity cutoff for firearm crops
+  hard_negative_threshold: 0.60     # Hard negative penalty threshold (phones, bottles, tools)
+
+temporal:
+  history_frames: 5                 # Multi-frame validation window size
+  min_detections_in_window: 3       # Minimum detections required in window
+  danger_duration_seconds: 3.0      # Continuous gun exposure duration to escalate to DANGER
+
+risk:
+  high_threshold: 0.75              # Threat score cutoff for HIGH / DANGER alert
+  medium_threshold: 0.45            # Threat score cutoff for SUSPECT state
