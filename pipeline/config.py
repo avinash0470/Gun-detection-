@@ -107,6 +107,10 @@ class SystemConfig:
                 cfg.vector.hard_negative_threshold = float(vec["hard_negative_threshold"])
 
             temp = data.get("temporal", {})
+            if "history_frames" in temp:
+                cfg.temporal.history_frames = int(temp["history_frames"])
+            if "min_detections_in_window" in temp:
+                cfg.temporal.min_detections_in_window = int(temp["min_detections_in_window"])
             if "danger_duration_seconds" in temp:
                 cfg.temporal.danger_duration_seconds = float(temp["danger_duration_seconds"])
 

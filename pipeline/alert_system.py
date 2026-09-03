@@ -1,6 +1,9 @@
 import hashlib
 import time
+import logging
 from typing import Dict, Any
+
+logger = logging.getLogger("GunDetectionPipeline")
 
 class AlertSystem:
     def __init__(self):

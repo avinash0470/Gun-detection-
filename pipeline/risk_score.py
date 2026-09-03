@@ -5,14 +5,6 @@ class ThreatRiskScorer:
     def __init__(self, config: RiskConfig):
         self.config = config
 
-    def calculate_score(self, 
-                        detection_conf: float, 
-                        pose_risk: float, 
-                        location_risk: float, 
-                        track_stability: float, 
-                        vector_score: float) -> tuple:
-        return (0.0, "LOW")
-
     # Standard python signature
     def compute(self, metrics: Dict) -> Dict:
         """

@@ -5,6 +5,7 @@ import json
 import time
 from pipeline.config import SystemConfig
 from pipeline.core import GunDetectionPipeline
+from pipeline.recorder import VideoRecorder, ThreadedCamera
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("GunDetectionPipeline")
@@ -46,16 +47,22 @@ def run_live_feed(pipeline, source_input):
         source = source_input
 
     logger.info(f"Opening video source: {source}")
-    cap = cv2.VideoCapture(source)
+    cap = ThreadedCamera(source)
 
     if not cap.isOpened():
         logger.error(f"Error: Could not open video source {source}.")
         return
 
-    # Flushes buffer to eliminate camera lag
-    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+    # Get actual camera FPS for accurate recording playback speed
+    camera_fps = cap.get(cv2.CAP_PROP_FPS)
+    if camera_fps <= 0:
+        camera_fps = 20.0
 
     cv2.namedWindow("Gun Detection Pipeline", cv2.WINDOW_NORMAL)
+
+    # Initialize video recorder
+    recorder = VideoRecorder()
+    recorder_started = False
 
     fps_start_time = time.time()
     fps_frame_count = 0
@@ -148,11 +155,19 @@ def run_live_feed(pipeline, source_input):
         status_txt = f"FPS: {current_fps:.1f} | Quality Offset: +{quality.get('threshold_offset', 0):.2f} | Threat Alerts: {len(detections)}"
         cv2.putText(frame, status_txt, (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
 
+        # Record the annotated frame
+        if not recorder_started:
+            h, w = frame.shape[:2]
+            recorder.start(w, h, fps=camera_fps)
+            recorder_started = True
+        recorder.write_frame(frame)
+
         cv2.imshow("Gun Detection Pipeline", frame)
 
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
 
+    recorder.stop()
     cap.release()
     cv2.destroyAllWindows()
     logger.info("Video capture released.")
