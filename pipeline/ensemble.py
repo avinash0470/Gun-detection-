@@ -63,7 +63,7 @@ class DetectionEnsemble:
                         x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
                         conf = float(box.conf[0].item())
                         cls = int(box.cls[0].item())
-                        class_name = self.model.names[cls] if hasattr(self.model, 'names') else str(cls)
+                        class_name = result.names[cls] if cls in result.names else str(cls)
 
                         primary_raw.append({
                             "bbox": (x1, y1, x2, y2),

@@ -1,0 +1,27 @@
+# Virtual environment
+venv/
+
+# Python bytecode
+__pycache__/
+*.pyc
+*.pyo
+
+# YOLO model weights (large binary files)
+*.pt
+
+# Recordings output
+recordings/
+
+# Evidence snapshots
+evidence/
+
+# Detection event logs
+logs/
+
+# OS files
+Thumbs.db
+.DS_Store
+
+# IDE
+.vscode/
+.idea/

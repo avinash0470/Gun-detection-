@@ -96,6 +96,26 @@ python main.py --source "rtsp://username:password@ip_address:port/h264"
 python main.py
 ```
 
+Press `q` to quit the live feed.
+
+---
+
+## Output & Evidence
+
+### Video Recordings
+
+All live feed sessions are **automatically recorded** to the `recordings/` directory. Files are saved as timestamped `.avi` files (e.g. `detection_2026-09-03_14-08-15.avi`).
+
+### Evidence Snapshots
+
+When a **DANGER** alert is triggered, the system automatically saves:
+- A **JPEG snapshot** of the frame to the `evidence/` directory
+- A **SHA-256 evidence hash** for chain-of-custody verification
+
+### Detection Event Logs
+
+All detection events (LOW, MEDIUM, HIGH, DANGER) are logged to `logs/detection_events.jsonl` in JSON Lines format for audit trail and post-incident analysis.
+
 ---
 
 ## Visual Overlay Guide

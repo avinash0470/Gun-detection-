@@ -68,109 +68,111 @@ def run_live_feed(pipeline, source_input):
     fps_frame_count = 0
     current_fps = 0.0
 
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            logger.warning("Failed to grab frame.")
-            break
+    try:
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                logger.warning("Failed to grab frame.")
+                break
 
-        fps_frame_count += 1
-        if time.time() - fps_start_time >= 1.0:
-            current_fps = fps_frame_count / (time.time() - fps_start_time)
-            fps_frame_count = 0
-            fps_start_time = time.time()
+            fps_frame_count += 1
+            if time.time() - fps_start_time >= 1.0:
+                current_fps = fps_frame_count / (time.time() - fps_start_time)
+                fps_frame_count = 0
+                fps_start_time = time.time()
 
-        output = pipeline.process_frame(frame, location_risk=0.5)
-        persons = output.get("persons", [])
-        detections = output.get("detections", [])
-        quality = output.get("quality", {})
+            output = pipeline.process_frame(frame, location_risk=0.5)
+            persons = output.get("persons", [])
+            detections = output.get("detections", [])
+            quality = output.get("quality", {})
 
-        threatened_track_ids = {}
-        for det in detections:
-            tid = det.get("track_id")
-            if tid and not tid.startswith("gun_unassociated"):
-                threatened_track_ids[tid] = det
+            threatened_track_ids = {}
+            for det in detections:
+                tid = det.get("track_id")
+                if tid and not tid.startswith("gun_unassociated"):
+                    threatened_track_ids[tid] = det
 
-        # 1. Render Person Bounding Boxes & Formatted ReID Tags
-        for person in persons:
-            px1, py1, px2, py2 = person["bbox"]
-            pid = person["track_id"]
-            is_suspect = person.get("is_suspect", False)
-            is_concealed = person.get("is_concealed", False)
+            # 1. Render Person Bounding Boxes & Formatted ReID Tags
+            for person in persons:
+                px1, py1, px2, py2 = person["bbox"]
+                pid = person["track_id"]
+                is_suspect = person.get("is_suspect", False)
+                is_concealed = person.get("is_concealed", False)
 
-            if pid in threatened_track_ids:
-                det_info = threatened_track_ids[pid]
-                risk_level = det_info["risk_level"]
-                duration = det_info.get("gun_duration_sec", 0.0)
-                
-                if risk_level == "DANGER" or risk_level == "HIGH":
-                    p_color = (0, 0, 255) # Red
-                    label = f"DANGER! ARMED SUSPECT [ReID: {pid}] ({duration:.1f}s)"
-                    cv2.rectangle(frame, (px1, py1), (px2, py2), p_color, 4)
-                    cv2.putText(frame, label, (px1, max(py1 - 10, 15)),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.65, p_color, 2)
-                else:
+                if pid in threatened_track_ids:
+                    det_info = threatened_track_ids[pid]
+                    risk_level = det_info["risk_level"]
+                    duration = det_info.get("gun_duration_sec", 0.0)
+                    
+                    if risk_level == "DANGER" or risk_level == "HIGH":
+                        p_color = (0, 0, 255) # Red
+                        label = f"DANGER! ARMED SUSPECT [ReID: {pid}] ({duration:.1f}s)"
+                        cv2.rectangle(frame, (px1, py1), (px2, py2), p_color, 4)
+                        cv2.putText(frame, label, (px1, max(py1 - 10, 15)),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.65, p_color, 2)
+                    else:
+                        p_color = (0, 215, 255) # Yellow/Orange
+                        label = f"SUSPECT [ReID: {pid}]"
+                        cv2.rectangle(frame, (px1, py1), (px2, py2), p_color, 2)
+                        cv2.putText(frame, label, (px1, max(py1 - 10, 15)),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, p_color, 2)
+                elif is_concealed or is_suspect:
+                    # WEAPON CONCEALED / HIDDEN STATE (Display ReID tag for suspect)
                     p_color = (0, 215, 255) # Yellow/Orange
-                    label = f"SUSPECT [ReID: {pid}]"
+                    label = f"SUSPECT (CONCEALED) [ReID: {pid}]"
                     cv2.rectangle(frame, (px1, py1), (px2, py2), p_color, 2)
                     cv2.putText(frame, label, (px1, max(py1 - 10, 15)),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.55, p_color, 2)
-            elif is_concealed or is_suspect:
-                # WEAPON CONCEALED / HIDDEN STATE (Display ReID tag for suspect)
-                p_color = (0, 215, 255) # Yellow/Orange
-                label = f"SUSPECT (CONCEALED) [ReID: {pid}]"
-                cv2.rectangle(frame, (px1, py1), (px2, py2), p_color, 2)
-                cv2.putText(frame, label, (px1, max(py1 - 10, 15)),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.55, p_color, 2)
-            else:
-                # Clean person (thin green box, NO text label)
-                cv2.rectangle(frame, (px1, py1), (px2, py2), (0, 255, 0), 1)
+                else:
+                    # Clean person (thin green box, NO text label)
+                    cv2.rectangle(frame, (px1, py1), (px2, py2), (0, 255, 0), 1)
 
-        # 2. Render Firearm Bounding Boxes
-        for det in detections:
-            gx1, gy1, gx2, gy2 = det["gun_bbox"]
-            risk_level = det["risk_level"]
-            risk_score = det["risk_score"]
-            conf = det["confidence"]
-            cls_name = det["class"]
-            duration = det.get("gun_duration_sec", 0.0)
+            # 2. Render Firearm Bounding Boxes
+            for det in detections:
+                gx1, gy1, gx2, gy2 = det["gun_bbox"]
+                risk_level = det["risk_level"]
+                risk_score = det["risk_score"]
+                conf = det["confidence"]
+                cls_name = det["class"]
+                duration = det.get("gun_duration_sec", 0.0)
 
-            if risk_level == "DANGER" or risk_level == "HIGH":
-                color = (0, 0, 255)
-                status_tag = f"DANGER ALERT ({duration:.1f}s)"
-            elif risk_level == "MEDIUM":
-                color = (0, 215, 255)
-                status_tag = "SUSPECTED"
-            else:
-                color = (0, 255, 0)
-                status_tag = "LOW RISK"
+                if risk_level == "DANGER" or risk_level == "HIGH":
+                    color = (0, 0, 255)
+                    status_tag = f"DANGER ALERT ({duration:.1f}s)"
+                elif risk_level == "MEDIUM":
+                    color = (0, 215, 255)
+                    status_tag = "SUSPECTED"
+                else:
+                    color = (0, 255, 0)
+                    status_tag = "LOW RISK"
 
-            cv2.rectangle(frame, (gx1, gy1), (gx2, gy2), color, 3)
-            
-            label = f"{cls_name.upper()} ({conf:.2f}) | {status_tag}"
-            cv2.putText(frame, label, (gx1, max(gy1 - 10, 15)),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 2)
+                cv2.rectangle(frame, (gx1, gy1), (gx2, gy2), color, 3)
+                
+                label = f"{cls_name.upper()} ({conf:.2f}) | {status_tag}"
+                cv2.putText(frame, label, (gx1, max(gy1 - 10, 15)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 2)
 
-        # Header status bar overlay with real FPS counter
-        status_txt = f"FPS: {current_fps:.1f} | Quality Offset: +{quality.get('threshold_offset', 0):.2f} | Threat Alerts: {len(detections)}"
-        cv2.putText(frame, status_txt, (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+            # Header status bar overlay with real FPS counter
+            status_txt = f"FPS: {current_fps:.1f} | Quality Offset: +{quality.get('threshold_offset', 0):.2f} | Threat Alerts: {len(detections)}"
+            cv2.putText(frame, status_txt, (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
 
-        # Record the annotated frame
-        if not recorder_started:
-            h, w = frame.shape[:2]
-            recorder.start(w, h, fps=camera_fps)
-            recorder_started = True
-        recorder.write_frame(frame)
+            # Record the annotated frame
+            if not recorder_started:
+                h, w = frame.shape[:2]
+                recorder.start(w, h, fps=camera_fps)
+                recorder_started = True
+            recorder.write_frame(frame)
 
-        cv2.imshow("Gun Detection Pipeline", frame)
+            cv2.imshow("Gun Detection Pipeline", frame)
 
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            break
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                break
 
-    recorder.stop()
-    cap.release()
-    cv2.destroyAllWindows()
-    logger.info("Video capture released.")
+    finally:
+        recorder.stop()
+        cap.release()
+        cv2.destroyAllWindows()
+        logger.info("Video capture released.")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Gun Detection and Verification Pipeline")

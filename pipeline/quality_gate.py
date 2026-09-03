@@ -17,11 +17,15 @@ class FrameQualityGate:
             blur_metric = frame.get("blur", 150.0)
             occlusion_score = frame.get("occlusion", 0.0)
         else:
-            # Simple calculations for real numpy arrays
+            # Real frame analysis using numpy arrays
             brightness = float(np.mean(frame)) / 255.0 if frame is not None else 0.8
-            # Simple placeholder for blur metric (Variance of Laplacian)
-            # In real system: cv2.Laplacian(frame, cv2.CV_64F).var()
-            blur_metric = 120.0
+            # Blur detection using Variance of Laplacian (low value = blurry)
+            try:
+                import cv2
+                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                blur_metric = cv2.Laplacian(gray, cv2.CV_64F).var()
+            except Exception:
+                blur_metric = 120.0
             occlusion_score = 0.0
 
         is_low_light = brightness < self.config.low_light_threshold

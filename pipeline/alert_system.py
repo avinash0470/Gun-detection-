@@ -1,14 +1,26 @@
 import hashlib
 import time
 import logging
+import os
+import cv2
+import json
+from datetime import datetime
 from typing import Dict, Any
 
 logger = logging.getLogger("GunDetectionPipeline")
 
 class AlertSystem:
-    def __init__(self):
+    def __init__(self, evidence_dir: str = "evidence", log_dir: str = "logs"):
         self.review_queue = []
         self.audit_log = []
+        self.evidence_dir = evidence_dir
+        self.log_dir = log_dir
+
+        os.makedirs(self.evidence_dir, exist_ok=True)
+        os.makedirs(self.log_dir, exist_ok=True)
+
+        # Persistent detection event log file (JSONL format)
+        self.log_file = os.path.join(self.log_dir, "detection_events.jsonl")
 
     def dispatch(self, track_id: str, risk_data: Dict[str, Any], frame) -> Dict:
         """
@@ -26,6 +38,7 @@ class AlertSystem:
             "score": score,
             "level": level,
             "timestamp": timestamp,
+            "datetime": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "action_taken": "NONE"
         }
 
@@ -39,11 +52,16 @@ class AlertSystem:
             self.audit_log.append(event)
             
         elif level in ["HIGH", "DANGER"]:
-            # EVIDENCE CAPTURE (Hashed, timestamped, audit trail)
+            # EVIDENCE CAPTURE (Hashed, timestamped, audit trail + snapshot saved)
             evidence_hash = self._generate_evidence_hash(track_id, score, timestamp, frame)
+            snapshot_path = self._save_evidence_snapshot(track_id, timestamp, frame)
             event["action_taken"] = "IMMEDIATE_DANGER_ALERT_DISPATCHED"
             event["evidence_hash"] = evidence_hash
+            event["snapshot_path"] = snapshot_path
             self.audit_log.append(event)
+
+        # Write event to persistent log file
+        self._write_event_log(event)
             
         return event
 
@@ -66,6 +84,30 @@ class AlertSystem:
             
             return event
         return {"error": "Event ID not found"}
+
+    def _save_evidence_snapshot(self, track_id: str, timestamp: float, frame) -> str:
+        """Saves the frame as a JPEG image for evidence when a DANGER alert fires."""
+        if not isinstance(frame, dict) and frame is not None:
+            try:
+                dt_str = datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d_%H-%M-%S")
+                filename = f"evidence_{track_id}_{dt_str}.jpg"
+                filepath = os.path.join(self.evidence_dir, filename)
+                cv2.imwrite(filepath, frame)
+                logger.info(f"EVIDENCE SNAPSHOT saved: {filepath}")
+                return filepath
+            except Exception as e:
+                logger.error(f"Failed to save evidence snapshot: {e}")
+        return ""
+
+    def _write_event_log(self, event: Dict):
+        """Appends event to a persistent JSONL log file on disk."""
+        try:
+            # Create a serializable copy (avoid writing non-serializable data)
+            log_entry = {k: v for k, v in event.items()}
+            with open(self.log_file, "a") as f:
+                f.write(json.dumps(log_entry) + "\n")
+        except Exception as e:
+            logger.error(f"Failed to write event log: {e}")
 
     def _generate_evidence_hash(self, track_id: str, score: float, timestamp: float, frame) -> str:
         """

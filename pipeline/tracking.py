@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List, Dict, Tuple, Optional
 import uuid
 import logging
@@ -24,7 +24,7 @@ class TrackedPerson:
     track_id: str
     bbox: Tuple[int, int, int, int]
     reid_vector: np.ndarray
-    association_history: List[str] = None
+    association_history: List[str] = field(default_factory=list)
     is_suspect: bool = False
     previously_armed: bool = False
     last_armed_timestamp: float = 0.0
