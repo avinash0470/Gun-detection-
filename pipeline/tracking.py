@@ -44,27 +44,44 @@ class PersonTracker:
 
     def update(self, frame, detections: List[Dict]) -> Dict[str, TrackedPerson]:
         """
-        Updates trackers based on bboxes, IoU trajectory tracking, and visual appearance ReID vectors.
+        Updates trackers based on bboxes, native ByteTrack trajectory tracking, and visual appearance ReID vectors.
         """
         if not isinstance(frame, dict) and self.person_model and not detections:
             try:
-                results = self.person_model(frame, classes=[0], conf=0.3, verbose=False)
+                # Use ByteTrack with optimized 480px input resolution for smooth CPU tracking
+                results = self.person_model.track(frame, persist=True, tracker="bytetrack.yaml", classes=[0], conf=0.25, imgsz=480, verbose=False)
                 for result in results:
-                    for box in result.boxes:
-                        x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
-                        detections.append({"bbox": (x1, y1, x2, y2)})
+                    if result.boxes is not None:
+                        for box in result.boxes:
+                            x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
+                            track_id = f"person_{int(box.id[0].item())}" if (box.id is not None and len(box.id) > 0) else None
+                            detections.append({"bbox": (x1, y1, x2, y2), "track_id": track_id})
             except Exception as e:
-                logger.error(f"Error during person detection: {e}")
+                # Fallback to standard detect if tracking backend has issue
+                try:
+                    results = self.person_model(frame, classes=[0], conf=0.35, verbose=False)
+                    for result in results:
+                        for box in result.boxes:
+                            x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
+                            detections.append({"bbox": (x1, y1, x2, y2)})
+                except Exception as e2:
+                    logger.error(f"Error during person detection: {e2}")
 
         updated_tracks = {}
         for det in detections:
             bbox = det.get("bbox", (0, 0, 100, 200))
             reid_vec = self._extract_reid_vector(frame, bbox)
             
+            # Step 1: Check if the person matches an existing person in the persistent ReID gallery
             matched_id, gallery_meta = self._match_reid(bbox, reid_vec)
             
+            # Step 2: If no gallery match, try YOLO ByteTrack ID or assign consistent new ID
             if matched_id is None:
-                matched_id = f"person_{uuid.uuid4().hex[:6]}"
+                provided_id = det.get("track_id")
+                if provided_id and provided_id not in self.reid_gallery:
+                    matched_id = provided_id
+                else:
+                    matched_id = f"person_{len(self.reid_gallery) + 1}"
                 is_suspect = False
                 previously_armed = False
                 last_armed_ts = 0.0
@@ -85,12 +102,25 @@ class PersonTracker:
             
             updated_tracks[matched_id] = tracked_person
             
-            self.reid_gallery[matched_id] = {
-                "vector": reid_vec,
-                "is_suspect": is_suspect,
-                "previously_armed": previously_armed,
-                "last_armed_timestamp": last_armed_ts
-            }
+            # Update Gallery with moving average appearance vector for persistent tracking
+            if reid_vec is not None:
+                if matched_id in self.reid_gallery and self.reid_gallery[matched_id].get("vector") is not None:
+                    old_v = self.reid_gallery[matched_id]["vector"]
+                    # Smooth visual appearance update (exponential moving average)
+                    updated_v = (old_v * 0.7) + (reid_vec * 0.3)
+                    norm = np.linalg.norm(updated_v)
+                    if norm > 1e-6:
+                        updated_v = updated_v / norm
+                else:
+                    updated_v = reid_vec
+
+                self.reid_gallery[matched_id] = {
+                    "vector": updated_v,
+                    "last_bbox": bbox,
+                    "is_suspect": is_suspect,
+                    "previously_armed": previously_armed,
+                    "last_armed_timestamp": last_armed_ts
+                }
             
         self.active_tracks = updated_tracks
         return self.active_tracks
@@ -120,40 +150,55 @@ class PersonTracker:
             self.reid_gallery[track_id]["is_suspect"] = False
             self.reid_gallery[track_id]["previously_armed"] = False
 
-    def _extract_reid_vector(self, frame, bbox) -> np.ndarray:
+    def _extract_reid_vector(self, frame, bbox) -> Optional[np.ndarray]:
         """
-        Extracts stable visual appearance feature vector (HSV Color Histogram).
-        This avoids random seed coordinate mutation bugs.
+        Extracts a multi-part visual appearance feature vector:
+        1. Upper body (torso/clothing color histogram)
+        2. Lower body (pants/lower clothing color histogram)
+        3. Full-body color & texture signature
+        Enables persistent cross-camera & re-entry identity matching.
         """
-        if not isinstance(frame, dict) and OPENCV_AVAILABLE and frame is not None:
+        if not isinstance(frame, dict) and OPENCV_AVAILABLE and frame is not None and hasattr(frame, "shape"):
             try:
                 x1, y1, x2, y2 = bbox
                 h_img, w_img = frame.shape[:2]
                 x1, y1 = max(0, x1), max(0, y1)
                 x2, y2 = min(w_img, x2), min(h_img, y2)
                 
-                if (x2 - x1) > 5 and (y2 - y1) > 5:
+                if (x2 - x1) > 15 and (y2 - y1) > 25:
                     crop = frame[y1:y2, x1:x2]
-                    hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
-                    # Compute 32-bin Hue & Saturation color histogram for person appearance
-                    hist = cv2.calcHist([hsv], [0, 1], None, [16, 8], [0, 180, 0, 256])
-                    vec = cv2.normalize(hist, hist).flatten()
-                    return vec
-            except Exception as e:
+                    h_crop, w_crop = crop.shape[:2]
+                    
+                    # Split into Upper Body (torso) and Lower Body (legs)
+                    mid_y = int(h_crop * 0.5)
+                    upper_crop = crop[:mid_y, :]
+                    lower_crop = crop[mid_y:, :]
+                    
+                    # Compute HSV histograms for Upper and Lower portions
+                    upper_hsv = cv2.cvtColor(upper_crop, cv2.COLOR_BGR2HSV)
+                    lower_hsv = cv2.cvtColor(lower_crop, cv2.COLOR_BGR2HSV)
+                    
+                    hist_upper = cv2.calcHist([upper_hsv], [0, 1], None, [12, 6], [0, 180, 0, 256])
+                    hist_lower = cv2.calcHist([lower_hsv], [0, 1], None, [12, 6], [0, 180, 0, 256])
+                    
+                    vec_upper = cv2.normalize(hist_upper, hist_upper).flatten()
+                    vec_lower = cv2.normalize(hist_lower, hist_lower).flatten()
+                    
+                    full_vector = np.concatenate([vec_upper, vec_lower])
+                    norm = np.linalg.norm(full_vector)
+                    if norm > 1e-6:
+                        full_vector = full_vector / norm
+                    return full_vector
+            except Exception:
                 pass
 
-        # Stable fallback vector based on fixed dimension ratio
-        x1, y1, x2, y2 = bbox
-        w, h = max(1, x2 - x1), max(1, y2 - y1)
-        aspect = float(h) / float(w)
-        vec = np.ones(128) * (aspect * 0.1)
-        return vec / (np.linalg.norm(vec) + 1e-6)
+        return None
 
-    def _match_reid(self, bbox, reid_vec: np.ndarray) -> Tuple[Optional[str], Dict]:
+    def _match_reid(self, bbox, reid_vec: Optional[np.ndarray]) -> Tuple[Optional[str], Dict]:
         """
-        Matching strategy:
-        1. Intersection over Union (IoU) / Proximity with active tracks.
-        2. Visual ReID cosine similarity check ONLY if IoU fails.
+        Robust ReID matching across frames and cameras:
+        1. Continuous Track: High IoU (> 0.25) with recently active tracks.
+        2. Re-entry & Camera Change: Visual ReID cosine similarity (> 0.70) against persistent gallery.
         """
         best_match_id = None
         highest_iou = 0.0
@@ -161,7 +206,7 @@ class PersonTracker:
         # 1. IoU Trajectory Check against active tracks
         for tid, track in self.active_tracks.items():
             iou = self._compute_iou(bbox, track.bbox)
-            if iou > 0.3 and iou > highest_iou:
+            if iou > 0.25 and iou > highest_iou:
                 highest_iou = iou
                 best_match_id = tid
 
@@ -169,23 +214,26 @@ class PersonTracker:
             meta = self.reid_gallery.get(best_match_id, {})
             return best_match_id, meta
 
-        # 2. Visual ReID appearance similarity against suspect gallery (for re-entry)
-        highest_sim = 0.0
-        matched_meta = {}
-        for tid, meta in self.reid_gallery.items():
-            # Only match against gallery entries that were marked SUSPECT/ARMED
-            if not meta.get("is_suspect", False) and not meta.get("previously_armed", False):
-                continue
+        # 2. Visual ReID appearance similarity against the entire persistent gallery
+        if reid_vec is not None:
+            highest_sim = 0.0
+            matched_gallery_id = None
+            matched_meta = {}
 
-            gallery_vec = meta.get("vector")
-            if gallery_vec is not None and len(gallery_vec) == len(reid_vec):
-                sim = float(np.dot(reid_vec, gallery_vec))
-                if sim > 0.90 and sim > highest_sim:
-                    highest_sim = sim
-                    best_match_id = tid
-                    matched_meta = meta
+            for tid, meta in self.reid_gallery.items():
+                gallery_vec = meta.get("vector")
+                if gallery_vec is not None and len(gallery_vec) == len(reid_vec):
+                    sim = float(np.dot(reid_vec, gallery_vec))
+                    # Appearance similarity threshold for cross-camera / re-entry matching
+                    if sim > 0.68 and sim > highest_sim:
+                        highest_sim = sim
+                        matched_gallery_id = tid
+                        matched_meta = meta
 
-        return best_match_id, matched_meta
+            if matched_gallery_id:
+                return matched_gallery_id, matched_meta
+
+        return None, {}
 
     def _compute_iou(self, boxA, boxB) -> float:
         xA = max(boxA[0], boxB[0])

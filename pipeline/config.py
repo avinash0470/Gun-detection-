@@ -49,6 +49,11 @@ class RiskConfig:
     })
 
 @dataclass
+class StreamConfig:
+    default_source: str = "0"
+    rtsp_url: str = "rtsp://admin:hikvision_ipcam@192.168.1.101/Streaming/Channels/101"
+
+@dataclass
 class SystemConfig:
     degraded_mode: bool = False
     enable_ensemble: bool = True
@@ -58,6 +63,7 @@ class SystemConfig:
     vector: VectorVerifyConfig = field(default_factory=VectorVerifyConfig)
     temporal: TemporalConfig = field(default_factory=TemporalConfig)
     risk: RiskConfig = field(default_factory=RiskConfig)
+    stream: StreamConfig = field(default_factory=StreamConfig)
 
     @classmethod
     def load_from_file(cls, config_path: str = "config.yaml"):
@@ -119,6 +125,12 @@ class SystemConfig:
                 cfg.risk.high_threshold = float(rsk["high_threshold"])
             if "medium_threshold" in rsk:
                 cfg.risk.medium_threshold = float(rsk["medium_threshold"])
+
+            strm = data.get("stream", {})
+            if "default_source" in strm:
+                cfg.stream.default_source = str(strm["default_source"])
+            if "rtsp_url" in strm:
+                cfg.stream.rtsp_url = str(strm["rtsp_url"])
 
         except Exception as e:
             print(f"Warning: Could not parse configuration file '{target_path}': {e}")

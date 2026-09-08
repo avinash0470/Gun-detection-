@@ -33,12 +33,12 @@ class FrameQualityGate:
         is_occluded = occlusion_score > self.config.occlusion_threshold
 
         # Compute dynamic threshold adjustments
-        # Low light or blur raises the confidence thresholds downstream to avoid false positives
+        # Cap penalties so motion blur does not block detection of moving firearms
         threshold_offset = 0.0
         if is_low_light:
-            threshold_offset += 0.15
+            threshold_offset += 0.05
         if is_blurry:
-            threshold_offset += 0.10
+            threshold_offset += 0.05
 
         return {
             "brightness": brightness,

@@ -34,20 +34,16 @@ class TemporalValidator:
                     self.gun_first_seen_timestamp[track_id] = now
             else:
                 self.occlusion_counters[track_id] += 1
-                # Clear timestamp if not detected for extended occlusion recovery period
-                if self.occlusion_counters[track_id] > self.config.occlusion_recovery_frames:
+                # If gun disappears for 3 consecutive frames, reset exposure timer
+                if self.occlusion_counters[track_id] >= 3:
                     self.gun_first_seen_timestamp.pop(track_id, None)
 
             detections_count = sum(self.track_history[track_id])
             is_valid = detections_count >= self.config.min_detections_in_window
-            
-            if not is_valid and self.occlusion_counters[track_id] < self.config.occlusion_recovery_frames:
-                if len(self.track_history[track_id]) > 0 and self.track_history[track_id][0] == True:
-                    is_valid = True
 
-            # Calculate duration in seconds
+            # Duration only accumulates when weapon detection is actively validated across multiple frames
             duration_sec = 0.0
-            if track_id in self.gun_first_seen_timestamp:
+            if is_valid and track_id in self.gun_first_seen_timestamp:
                 duration_sec = max(0.0, now - self.gun_first_seen_timestamp[track_id])
 
             results[track_id] = {

@@ -5,7 +5,6 @@ import json
 import time
 from pipeline.config import SystemConfig
 from pipeline.core import GunDetectionPipeline
-from pipeline.recorder import VideoRecorder, ThreadedCamera
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("GunDetectionPipeline")
@@ -47,22 +46,16 @@ def run_live_feed(pipeline, source_input):
         source = source_input
 
     logger.info(f"Opening video source: {source}")
-    cap = ThreadedCamera(source)
+    cap = cv2.VideoCapture(source)
 
     if not cap.isOpened():
         logger.error(f"Error: Could not open video source {source}.")
         return
 
-    # Get actual camera FPS for accurate recording playback speed
-    camera_fps = cap.get(cv2.CAP_PROP_FPS)
-    if camera_fps <= 0:
-        camera_fps = 20.0
-
-    cv2.namedWindow("Gun Detection Pipeline", cv2.WINDOW_NORMAL)
-
-    # Initialize video recorder
-    recorder = VideoRecorder()
-    recorder_started = False
+    # Configure Full Screen Window
+    window_name = "Gun Detection Pipeline"
+    cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+    cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
 
     fps_start_time = time.time()
     fps_frame_count = 0
@@ -81,87 +74,74 @@ def run_live_feed(pipeline, source_input):
                 fps_frame_count = 0
                 fps_start_time = time.time()
 
-            output = pipeline.process_frame(frame, location_risk=0.5)
+            # Execute pipeline process_frame
+            output = pipeline.process_frame(frame, location_risk=0.0)
             persons = output.get("persons", [])
             detections = output.get("detections", [])
             quality = output.get("quality", {})
 
+            # Map detections to associated person IDs
             threatened_track_ids = {}
             for det in detections:
                 tid = det.get("track_id")
                 if tid and not tid.startswith("gun_unassociated"):
                     threatened_track_ids[tid] = det
 
-            # 1. Render Person Bounding Boxes & Formatted ReID Tags
+            # =========================================================================
+            # STAGE 8 & VISUAL OVERLAYS:
+            # 1. Thin Green Box: Clean / Unarmed individual (ID label HIDDEN)
+            # 2. Bold Red/Orange Box (ARMED SUSPECT): Only shown when an active gun is in hand
+            # =========================================================================
             for person in persons:
                 px1, py1, px2, py2 = person["bbox"]
                 pid = person["track_id"]
-                is_suspect = person.get("is_suspect", False)
-                is_concealed = person.get("is_concealed", False)
 
+                # Check if this person actively holds a verified firearm in hand
                 if pid in threatened_track_ids:
                     det_info = threatened_track_ids[pid]
-                    risk_level = det_info["risk_level"]
                     duration = det_info.get("gun_duration_sec", 0.0)
                     
-                    if risk_level == "DANGER" or risk_level == "HIGH":
-                        p_color = (0, 0, 255) # Red
-                        label = f"DANGER! ARMED SUSPECT [ReID: {pid}] ({duration:.1f}s)"
-                        cv2.rectangle(frame, (px1, py1), (px2, py2), p_color, 4)
-                        cv2.putText(frame, label, (px1, max(py1 - 10, 15)),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.65, p_color, 2)
-                    else:
-                        p_color = (0, 215, 255) # Yellow/Orange
-                        label = f"SUSPECT [ReID: {pid}]"
-                        cv2.rectangle(frame, (px1, py1), (px2, py2), p_color, 2)
-                        cv2.putText(frame, label, (px1, max(py1 - 10, 15)),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, p_color, 2)
-                elif is_concealed or is_suspect:
-                    # WEAPON CONCEALED / HIDDEN STATE (Display ReID tag for suspect)
-                    p_color = (0, 215, 255) # Yellow/Orange
-                    label = f"SUSPECT (CONCEALED) [ReID: {pid}]"
+                    p_color = (0, 0, 255) if duration >= 3.0 else (0, 140, 255) # Red / Orange
+                    label = f"ARMED SUSPECT [ID: {pid}]"
+                    if duration > 1.0:
+                        label += f" ({duration:.1f}s)"
+
                     cv2.rectangle(frame, (px1, py1), (px2, py2), p_color, 2)
                     cv2.putText(frame, label, (px1, max(py1 - 10, 15)),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.55, p_color, 2)
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, p_color, 2)
                 else:
-                    # Clean person (thin green box, NO text label)
+                    # Clean / Unarmed individual: Green box with NO ID / NO text
                     cv2.rectangle(frame, (px1, py1), (px2, py2), (0, 255, 0), 1)
 
-            # 2. Render Firearm Bounding Boxes
+            # Render Firearm Bounding Boxes (Red) ONLY for verified guns in hand
             for det in detections:
                 gx1, gy1, gx2, gy2 = det["gun_bbox"]
-                risk_level = det["risk_level"]
-                risk_score = det["risk_score"]
                 conf = det["confidence"]
-                cls_name = det["class"]
+                cls_name = "GUN"
                 duration = det.get("gun_duration_sec", 0.0)
 
-                if risk_level == "DANGER" or risk_level == "HIGH":
-                    color = (0, 0, 255)
-                    status_tag = f"DANGER ALERT ({duration:.1f}s)"
-                elif risk_level == "MEDIUM":
-                    color = (0, 215, 255)
-                    status_tag = "SUSPECTED"
-                else:
-                    color = (0, 255, 0)
-                    status_tag = "LOW RISK"
+                color = (0, 0, 255) # Red
+                label = f"{cls_name} ({conf:.2f})"
+                if duration > 1.0:
+                    label += f" [{duration:.1f}s]"
 
-                cv2.rectangle(frame, (gx1, gy1), (gx2, gy2), color, 3)
-                
-                label = f"{cls_name.upper()} ({conf:.2f}) | {status_tag}"
+                cv2.rectangle(frame, (gx1, gy1), (gx2, gy2), color, 2)
                 cv2.putText(frame, label, (gx1, max(gy1 - 10, 15)),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 2)
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
 
-            # Header status bar overlay with real FPS counter
-            status_txt = f"FPS: {current_fps:.1f} | Quality Offset: +{quality.get('threshold_offset', 0):.2f} | Threat Alerts: {len(detections)}"
-            cv2.putText(frame, status_txt, (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+            # Header status bar overlay
+            threat_count = len(detections)
+            gun_status = 1 if threat_count > 0 else 0
+            
+            # Real-time terminal printout: Gun: 1 (armed person ID) or Gun: 0
+            if gun_status == 1:
+                armed_ids = [d["track_id"] for d in detections if d.get("track_id")]
+                print(f"[STATUS] GUN: 1 | Armed Person ID: {', '.join(armed_ids)} | Detections: {threat_count} | FPS: {current_fps:.1f}", flush=True)
+            else:
+                print(f"[STATUS] GUN: 0 | People: {len(persons)} | FPS: {current_fps:.1f}", flush=True)
 
-            # Record the annotated frame
-            if not recorder_started:
-                h, w = frame.shape[:2]
-                recorder.start(w, h, fps=camera_fps)
-                recorder_started = True
-            recorder.write_frame(frame)
+            status_txt = f"FPS: {current_fps:.1f} | People: {len(persons)} | GUN: {gun_status}"
+            cv2.putText(frame, status_txt, (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255) if gun_status == 1 else (0, 255, 0), 2)
 
             cv2.imshow("Gun Detection Pipeline", frame)
 
@@ -169,7 +149,6 @@ def run_live_feed(pipeline, source_input):
                 break
 
     finally:
-        recorder.stop()
         cap.release()
         cv2.destroyAllWindows()
         logger.info("Video capture released.")
@@ -177,14 +156,26 @@ def run_live_feed(pipeline, source_input):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Gun Detection and Verification Pipeline")
     parser.add_argument("--source", type=str, default=None, 
-                        help="Video source index (e.g. '0' for Webcam) or RTSP Stream URL. If omitted, runs simulated test.")
+                        help="Video source: '0' (Webcam), 'rtsp' (uses config.yaml RTSP URL), RTSP URL string, or 'sim' for simulation mode.")
+    parser.add_argument("--rtsp", action="store_true", help="Shortcut flag to run configured RTSP stream from config.yaml")
     args = parser.parse_args()
 
     # Load configuration from config.yaml
     config = SystemConfig.load_from_file("config.yaml")
     pipeline = GunDetectionPipeline(config)
 
-    if args.source is not None:
-        run_live_feed(pipeline, args.source)
+    # Resolve video source input
+    source = args.source
+    if args.rtsp or (isinstance(source, str) and source.lower() == "rtsp"):
+        source = config.stream.rtsp_url
+    elif source is None:
+        def_src = config.stream.default_source
+        if isinstance(def_src, str) and def_src.lower() == "rtsp":
+            source = config.stream.rtsp_url
+        elif def_src and str(def_src).lower() != "sim":
+            source = def_src
+
+    if source is not None and str(source).lower() != "sim":
+        run_live_feed(pipeline, source)
     else:
         run_simulation(pipeline)

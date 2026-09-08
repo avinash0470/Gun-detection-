@@ -1,9 +1,13 @@
 # Gun Detection Pipeline Configuration Settings
 
+stream:
+  default_source: "rtsp"            # Options: "0" (Webcam), "rtsp" (Uses rtsp_url below), or custom RTSP URL / video path
+  rtsp_url: "rtsp://admin:hikvision_ipcam@192.168.1.101/Streaming/Channels/101"
+
 detector:
-  primary_conf_threshold: 0.25      # Primary firearm detection confidence threshold (best_gun_11m.pt)
-  secondary_conf_threshold: 0.20    # Secondary detector confidence threshold
-  person_conf_threshold: 0.30       # Person tracking detection confidence threshold (yolo11m.pt)
+  primary_conf_threshold: 0.25      # Highly responsive threshold for fast motion & moving weapons
+  secondary_conf_threshold: 0.25    # Secondary detector confidence threshold
+  person_conf_threshold: 0.25       # Person detection confidence threshold (yolo11m.pt)
   watch_state_tolerance: 0.15       # Threshold difference triggering "Watch State"
 
 vector_verify:
@@ -11,8 +15,8 @@ vector_verify:
   hard_negative_threshold: 0.60     # Hard negative penalty threshold (phones, bottles, tools)
 
 temporal:
-  history_frames: 5                 # Multi-frame validation window size
-  min_detections_in_window: 3       # Minimum detections required in window
+  history_frames: 4                 # Shorter window for fast reaction
+  min_detections_in_window: 2       # Responsive trigger: detects after 2 positive frames
   danger_duration_seconds: 3.0      # Continuous gun exposure duration to escalate to DANGER
 
 risk:

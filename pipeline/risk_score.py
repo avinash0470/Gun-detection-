@@ -18,11 +18,11 @@ class ThreatRiskScorer:
         """
         w = self.config.weights
         
-        det_part = metrics.get("detection_conf", 0.5) * w.get("detection_conf", 0.3)
-        pose_part = metrics.get("pose_risk", 0.4) * w.get("pose_risk", 0.25)
-        loc_part = metrics.get("location_risk", 0.5) * w.get("location_risk", 0.15)
-        track_part = metrics.get("track_stability", 0.8) * w.get("track_stability", 0.1)
-        vec_part = metrics.get("vector_score", 0.5) * w.get("vector_score", 0.2)
+        det_part = metrics.get("detection_conf", 0.0) * w.get("detection_conf", 0.35)
+        pose_part = metrics.get("pose_risk", 0.0) * w.get("pose_risk", 0.25)
+        loc_part = metrics.get("location_risk", 0.0) * w.get("location_risk", 0.10)
+        track_part = metrics.get("track_stability", 0.5) * w.get("track_stability", 0.10)
+        vec_part = metrics.get("vector_score", 0.0) * w.get("vector_score", 0.20)
 
         total_score = det_part + pose_part + loc_part + track_part + vec_part
         # Ensure bounds

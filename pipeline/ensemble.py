@@ -17,8 +17,8 @@ class DetectionEnsemble:
         self.config = config
         self.model = None
 
-        # Load the best available firearm detection model (best_gun_11m.pt > best_gun.pt)
-        candidate_models = ["best_gun_11m.pt", "best_gun.pt"]
+        # Load the best available firearm detection model (best_gun_26n(23).pt > best_gun_26.pt > best_gun_11m.pt)
+        candidate_models = ["best_gun_26n(23).pt", "best_gun_26.pt", "best_gun_11m.pt", "best_gun.pt"]
         selected_model_path = None
         for path in candidate_models:
             if os.path.exists(path):
@@ -55,22 +55,24 @@ class DetectionEnsemble:
         # 1. Run real model inference if available and frame is not a dictionary (mock)
         if self.model and not isinstance(frame, dict):
             try:
-                results = self.model(frame, conf=primary_threshold, verbose=False)
+                # Optimized inference with 480 input resolution for high CPU FPS & motion tracking
+                results = self.model(frame, conf=primary_threshold, iou=0.40, imgsz=480, verbose=False)
                 for result in results:
                     boxes = result.boxes
-                    for box in boxes:
-                        # Extract xyxy bounding box coordinates
-                        x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
-                        conf = float(box.conf[0].item())
-                        cls = int(box.cls[0].item())
-                        class_name = result.names[cls] if cls in result.names else str(cls)
+                    if boxes is not None:
+                        for box in boxes:
+                            # Extract xyxy bounding box coordinates
+                            x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
+                            conf = float(box.conf[0].item())
+                            cls = int(box.cls[0].item())
+                            class_name = result.names[cls] if cls in result.names else str(cls)
 
-                        primary_raw.append({
-                            "bbox": (x1, y1, x2, y2),
-                            "confidence": conf,
-                            "class": class_name,
-                            "detector": "yolo_real"
-                        })
+                            primary_raw.append({
+                                "bbox": (x1, y1, x2, y2),
+                                "confidence": conf,
+                                "class": class_name,
+                                "detector": "yolo_real"
+                            })
             except Exception as e:
                 logger.error(f"Error during YOLO model inference: {e}")
 
@@ -112,13 +114,14 @@ class DetectionEnsemble:
                     "detector": "ensemble_agreement"
                 })
             else:
-                # Disagreement! Primary detected, secondary didn't
-                watch_state = True
+                # Disagreement! Primary detected, secondary didn't (only when secondary detector is active)
+                if len(secondary_passed) > 0 or isinstance(frame, dict):
+                    watch_state = True
                 confirmed_candidates.append({
                     "bbox": p_bbox,
                     "confidence": p_det["confidence"],
                     "class": p_det.get("class", "gun"),
-                    "detector": "primary_only_watch"
+                    "detector": "primary_yolo"
                 })
 
         # Check secondary detections not matched to primary

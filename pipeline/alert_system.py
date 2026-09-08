@@ -24,10 +24,7 @@ class AlertSystem:
 
     def dispatch(self, track_id: str, risk_data: Dict[str, Any], frame) -> Dict:
         """
-        Processes threat outcomes.
-        If Low: Keep watching, log only.
-        If Medium: Queue for human review.
-        If High: Evidence capture + immediate alert.
+        Processes threat outcomes without writing disk evidence images.
         """
         level = risk_data.get("level", "LOW")
         score = risk_data.get("score", 0.0)
@@ -52,16 +49,11 @@ class AlertSystem:
             self.audit_log.append(event)
             
         elif level in ["HIGH", "DANGER"]:
-            # EVIDENCE CAPTURE (Hashed, timestamped, audit trail + snapshot saved)
             evidence_hash = self._generate_evidence_hash(track_id, score, timestamp, frame)
-            snapshot_path = self._save_evidence_snapshot(track_id, timestamp, frame)
             event["action_taken"] = "IMMEDIATE_DANGER_ALERT_DISPATCHED"
             event["evidence_hash"] = evidence_hash
-            event["snapshot_path"] = snapshot_path
+            event["snapshot_path"] = None
             self.audit_log.append(event)
-
-        # Write event to persistent log file
-        self._write_event_log(event)
             
         return event
 
