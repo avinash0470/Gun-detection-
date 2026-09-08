@@ -1,3 +1,5 @@
+from typing import Dict, Any, Tuple, Optional
+
 try:
     from ultralytics import YOLO
     ULTRALYTICS_AVAILABLE = True
