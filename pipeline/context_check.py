@@ -7,11 +7,15 @@ except ImportError:
     ULTRALYTICS_AVAILABLE = False
 
 class PoseContextChecker:
-    def __init__(self):
+    def __init__(self, hardware_profile=None):
+        self.hardware = hardware_profile
         self.pose_model = None
-        if ULTRALYTICS_AVAILABLE:
+        self.enable_pose_keypoints = getattr(hardware_profile, "enable_pose_keypoints", False) if hardware_profile else False
+        self.device = getattr(hardware_profile, "device_str", "cpu") if hardware_profile else "cpu"
+
+        # Only load pose neural network if GPU is present (to save CPU cycles and prevent stutter)
+        if ULTRALYTICS_AVAILABLE and self.enable_pose_keypoints:
             try:
-                # Prefer lightweight nano pose if available, fallback to yolo11m-pose
                 self.pose_model = YOLO("yolo11m-pose.pt")
             except Exception:
                 self.pose_model = None
@@ -55,29 +59,31 @@ class PoseContextChecker:
             p_w = max(1, px2 - px1)
             p_h = max(1, py2 - py1)
 
-            # 1. Fast Spatial / Arm-Reach Heuristic (Zero CPU inference cost, handles fast motion blur)
-            # Firearms held in hand are within the person's bounding box expanded by arm-reach (30% width)
-            # and between 15% (shoulders) to 90% (hands/hips) of vertical person height
-            in_reach_x = (px1 - p_w * 0.35) <= g_cx <= (px2 + p_w * 0.35)
-            in_reach_y = (py1 + p_h * 0.12) <= g_cy <= (py2 + p_h * 0.10)
+            # 1. Fast Spatial / Arm-Reach Heuristic (Zero CPU inference cost, handles fast motion blur & perspective)
+            # Firearms held in hand are within the person's bounding box expanded by arm-reach (50% width)
+            # and between 10% (shoulders) to 110% (hands/hips/low-reach) of vertical person height
+            in_reach_x = (px1 - p_w * 0.50) <= g_cx <= (px2 + p_w * 0.50)
+            in_reach_y = (py1 + p_h * 0.08) <= g_cy <= (py2 + p_h * 0.18)
 
             if in_reach_x and in_reach_y:
                 is_in_hand = True
                 context = "in_hand"
 
-            # 2. Keypoint check for refined wrist distance if pose model is available
+            # 2. Keypoint check for refined wrist distance if pose model is enabled on GPU
             if self.pose_model and frame is not None and hasattr(frame, "shape") and not is_in_hand:
                 try:
                     h_img, w_img = frame.shape[:2]
-                    px1_c = max(0, int(px1 - 20))
-                    py1_c = max(0, int(py1 - 20))
-                    px2_c = min(w_img, int(px2 + 20))
-                    py2_c = min(h_img, int(py2 + 20))
+                    px1_c = max(0, int(px1 - 30))
+                    py1_c = max(0, int(py1 - 30))
+                    px2_c = min(w_img, int(px2 + 30))
+                    py2_c = min(h_img, int(py2 + 30))
 
                     person_crop = frame[py1_c:py2_c, px1_c:px2_c]
                     if person_crop.size > 0:
-                        # Fast inference with 256px resolution to maximize CPU FPS
-                        results = self.pose_model(person_crop, conf=0.25, imgsz=256, verbose=False)
+                        pose_kwargs = {"conf": 0.20, "imgsz": 320, "verbose": False}
+                        if self.device != "auto":
+                            pose_kwargs["device"] = self.device
+                        results = self.pose_model(person_crop, **pose_kwargs)
                         for res in results:
                             if res.keypoints is not None and len(res.keypoints.xy) > 0:
                                 kpts = res.keypoints.xy[0].cpu().numpy()

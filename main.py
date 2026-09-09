@@ -39,14 +39,89 @@ def run_simulation(pipeline):
     out_2 = pipeline.process_frame(frame_2, location_risk=0.8)
     print("\nFrame 2 (Weapon Concealed / Hidden - 0 Gun Detections):", json.dumps(out_2, indent=2))
 
+import threading
+
+class ThreadedVideoCapture:
+    """
+    Dedicated background frame reader that continuously grabs the freshest frame
+    from RTSP / Webcam. Prevents OpenCV internal buffer build-up, latency lag, and network degradation.
+    """
+    def __init__(self, source):
+        self.source = source
+        self.running = True
+        self.frame = None
+        self.ret = False
+        self.lock = threading.Lock()
+
+        # Configure FFMPEG options for low latency and TCP stability
+        if isinstance(source, str) and (source.startswith("rtsp://") or source.startswith("rtsps://")):
+            import os
+            os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp|fflags;nobuffer|flags;low_delay|max_delay;500000"
+            self.cap = cv2.VideoCapture(source, cv2.CAP_FFMPEG)
+            self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        else:
+            self.cap = cv2.VideoCapture(source)
+            self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+
+        if self.cap.isOpened():
+            self.ret, self.frame = self.cap.read()
+            self.thread = threading.Thread(target=self._capture_loop, daemon=True)
+            self.thread.start()
+
+    def _capture_loop(self):
+        while self.running:
+            if not self.cap.isOpened():
+                break
+            ret, frame = self.cap.read()
+            with self.lock:
+                self.ret = ret
+                if ret:
+                    self.frame = frame
+                else:
+                    self.running = False
+                    break
+            time.sleep(0.005) # Tiny sleep to prevent 100% core spin
+
+    def read(self):
+        with self.lock:
+            if self.frame is not None:
+                return self.ret, self.frame.copy()
+            return self.ret, None
+
+    def isOpened(self):
+        return self.cap.isOpened() and self.running
+
+    def get(self, prop):
+        return self.cap.get(prop)
+
+    def release(self):
+        self.running = False
+        if hasattr(self, 'thread') and self.thread.is_alive():
+            self.thread.join(timeout=1.0)
+        self.cap.release()
+
 def run_live_feed(pipeline, source_input, save_video=False, output_dir="output"):
+    import os
     try:
         source = int(source_input)
     except ValueError:
         source = source_input
 
     logger.info(f"Opening video source: {source}")
-    cap = cv2.VideoCapture(source)
+    
+    # Use Threaded Capture for RTSP or Webcams if configured
+    use_async = getattr(pipeline.config.stream, "async_capture", True)
+    if use_async:
+        cap = ThreadedVideoCapture(source)
+        # Give thread a split second to pull first frame
+        time.sleep(0.3)
+    else:
+        if isinstance(source, str) and (source.startswith("rtsp://") or source.startswith("rtsps://")):
+            os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp|fflags;nobuffer|flags;low_delay|max_delay;500000"
+            cap = cv2.VideoCapture(source, cv2.CAP_FFMPEG)
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        else:
+            cap = cv2.VideoCapture(source)
 
     if not cap.isOpened():
         logger.error(f"Error: Could not open video source {source}.")
@@ -124,9 +199,11 @@ def run_live_feed(pipeline, source_input, save_video=False, output_dir="output")
                 if pid in threatened_track_ids:
                     det_info = threatened_track_ids[pid]
                     duration = det_info.get("gun_duration_sec", 0.0)
+                    risk_lvl = det_info.get("risk_level", "MEDIUM")
                     
-                    p_color = (0, 0, 255) if duration >= 3.0 else (0, 140, 255) # Red / Orange
-                    label = f"ARMED SUSPECT [ID: {pid}]"
+                    # Red ONLY if verified DANGER (high confidence + high vector match + >3s duration)
+                    p_color = (0, 0, 255) if risk_lvl == "DANGER" else (0, 140, 255) # Red / Orange
+                    label = f"ARMED SUSPECT [{risk_lvl}] [ID: {pid}]"
                     if duration > 1.0:
                         label += f" ({duration:.1f}s)"
 
@@ -156,15 +233,16 @@ def run_live_feed(pipeline, source_input, save_video=False, output_dir="output")
             # Header status bar overlay
             threat_count = len(detections)
             gun_status = 1 if threat_count > 0 else 0
+            dev_tag = f"{pipeline.hardware.device_name} ({pipeline.hardware.imgsz}px)"
             
             # Real-time terminal printout: Gun: 1 (armed person ID) or Gun: 0
             if gun_status == 1:
                 armed_ids = [d["track_id"] for d in detections if d.get("track_id")]
-                print(f"[STATUS] GUN: 1 | Armed Person ID: {', '.join(armed_ids)} | Detections: {threat_count} | FPS: {current_fps:.1f}", flush=True)
+                print(f"[STATUS] GUN: 1 | Armed Person ID: {', '.join(armed_ids)} | Detections: {threat_count} | FPS: {current_fps:.1f} | Dev: {dev_tag}", flush=True)
             else:
-                print(f"[STATUS] GUN: 0 | People: {len(persons)} | FPS: {current_fps:.1f}", flush=True)
+                print(f"[STATUS] GUN: 0 | People: {len(persons)} | FPS: {current_fps:.1f} | Dev: {dev_tag}", flush=True)
 
-            status_txt = f"FPS: {current_fps:.1f} | People: {len(persons)} | GUN: {gun_status}"
+            status_txt = f"FPS: {current_fps:.1f} | {dev_tag} | People: {len(persons)} | GUN: {gun_status}"
             cv2.putText(frame, status_txt, (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255) if gun_status == 1 else (0, 255, 0), 2)
 
             # Write annotated frame to output video if writer is initialized
@@ -191,10 +269,14 @@ if __name__ == "__main__":
     parser.add_argument("--rtsp", action="store_true", help="Shortcut flag to run configured RTSP stream from config.yaml")
     parser.add_argument("--save", action="store_true", help="Save the annotated detection video to an output directory")
     parser.add_argument("--output-dir", type=str, default="output", help="Directory where the processed video will be saved (default: 'output')")
+    parser.add_argument("--device", type=str, default=None, help="Inference device: 'cuda', 'cpu', '0', '1', or 'auto' (default: auto-detected)")
     args = parser.parse_args()
 
     # Load configuration from config.yaml
     config = SystemConfig.load_from_file("config.yaml")
+    if args.device is not None:
+        config.detector.device = args.device
+
     pipeline = GunDetectionPipeline(config)
 
     # Resolve video source input

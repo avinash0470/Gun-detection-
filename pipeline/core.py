@@ -32,12 +32,19 @@ class GunDetectionPipeline:
 
     def __init__(self, config: SystemConfig):
         self.config = config
+        self.hardware = getattr(config, "hardware", None)
+        if self.hardware is None:
+            self.hardware = SystemConfig.detect_hardware(config.detector.device)
+            self.config.hardware = self.hardware
+
+        logger.info(f"Initialized Pipeline on {self.hardware.device_name} (Mode: {'High-End GPU' if self.hardware.is_high_end_gpu else ('GPU' if self.hardware.has_cuda else 'CPU Adaptive')}, Resolution: {self.hardware.imgsz}px, FP16: {self.hardware.use_half})")
+
         self.quality_gate = FrameQualityGate(config.quality)
-        self.tracker = PersonTracker()
-        self.ensemble = DetectionEnsemble(config.detector)
+        self.tracker = PersonTracker(config.detector, hardware_profile=self.hardware)
+        self.ensemble = DetectionEnsemble(config.detector, hardware_profile=self.hardware)
         self.vector_verify = VectorVerification(config.vector)
         self.temporal_validator = TemporalValidator(config.temporal)
-        self.context_checker = PoseContextChecker()
+        self.context_checker = PoseContextChecker(hardware_profile=self.hardware)
         self.associator = PersonGunAssociation()
         self.risk_scorer = ThreatRiskScorer(config.risk)
         self.alert_system = AlertSystem()
@@ -170,7 +177,7 @@ class GunDetectionPipeline:
             # Track stability
             track_stability = 0.8 if is_temporally_valid else 0.5
 
-            # Compute threat score
+            # Compute comprehensive multi-stage threat score
             metrics = {
                 "detection_conf": gun["confidence"],
                 "pose_risk": pose_risk_factor,
@@ -179,12 +186,24 @@ class GunDetectionPipeline:
                 "vector_score": gun.get("vector_score", 0.0)
             }
             risk_result = self.risk_scorer.compute(metrics)
+            total_threat_score = risk_result["score"]
 
-            # Mark risk level: if gun in hand, it is a confirmed armed threat
-            if gun_duration_sec >= 3.0:
+            # Multi-Stage Escalation Check:
+            # A person ONLY turns RED (DANGER) if:
+            # 1. Total threat score passes high threshold (>= 0.75)
+            # 2. Firearm detector confidence is high (>= 0.35)
+            # 3. Vector verification confirmed mechanical firearm features (vector_score >= 0.65)
+            # 4. Weapon has been persistently visible for >= danger_duration_seconds (3.0s)
+            is_high_threat = (total_threat_score >= self.config.risk.high_threshold and 
+                              gun["confidence"] >= 0.35 and 
+                              gun.get("vector_score", 0.0) >= 0.65)
+
+            if gun_duration_sec >= self.config.temporal.danger_duration_seconds and is_high_threat:
                 risk_result["level"] = "DANGER"
-            else:
+            elif is_high_threat or gun["confidence"] >= 0.30:
                 risk_result["level"] = "HIGH"
+            else:
+                risk_result["level"] = "MEDIUM"
 
             if assoc_pid:
                 self.tracker.mark_suspect(assoc_pid, is_armed=True)

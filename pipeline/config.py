@@ -17,11 +17,25 @@ class QualityGateConfig:
     occlusion_threshold: float = 0.5
 
 @dataclass
+class HardwareProfile:
+    has_cuda: bool = False
+    device_name: str = "CPU"
+    device_str: str = "cpu"
+    is_high_end_gpu: bool = False
+    imgsz: int = 480
+    use_half: bool = False
+    enable_pose_keypoints: bool = False
+    enable_async_reader: bool = True
+
+@dataclass
 class DetectorConfig:
     primary_conf_threshold: float = 0.25 # Gun detection confidence threshold
     secondary_conf_threshold: float = 0.20
-    person_conf_threshold: float = 0.30  # Person detection confidence threshold
+    person_conf_threshold: float = 0.25  # Person detection confidence threshold
     watch_state_tolerance: float = 0.15
+    device: str = "auto"                 # Device option: 'auto', 'cuda', 'cpu', '0', etc.
+    imgsz: int = 0                       # 0 means auto-scaled by hardware profile
+    half: Optional[bool] = None          # None means auto-decided
 
 @dataclass
 class VectorVerifyConfig:
@@ -31,8 +45,8 @@ class VectorVerifyConfig:
 
 @dataclass
 class TemporalConfig:
-    history_frames: int = 5
-    min_detections_in_window: int = 3
+    history_frames: int = 4
+    min_detections_in_window: int = 2
     occlusion_recovery_frames: int = 10
     danger_duration_seconds: float = 3.0
 
@@ -52,6 +66,8 @@ class RiskConfig:
 class StreamConfig:
     default_source: str = "0"
     rtsp_url: str = "rtsp://admin:hikvision_ipcam@192.168.1.101/Streaming/Channels/101"
+    async_capture: bool = True
+    buffer_size: int = 1
 
 @dataclass
 class SystemConfig:
@@ -64,6 +80,63 @@ class SystemConfig:
     temporal: TemporalConfig = field(default_factory=TemporalConfig)
     risk: RiskConfig = field(default_factory=RiskConfig)
     stream: StreamConfig = field(default_factory=StreamConfig)
+    hardware: HardwareProfile = field(default_factory=HardwareProfile)
+
+    @staticmethod
+    def detect_hardware(requested_device: str = "auto") -> HardwareProfile:
+        """
+        Inspects available GPU/CPU resources and selects the optimal scale:
+        - High-end GPU (RTX 5000, 4090, 3090, A100, etc.): 640/960px, FP16 half precision, Pose keypoints.
+        - Entry/Mid GPU: 640px, FP16 half precision.
+        - CPU / No GPU: Adaptive downgrade to 416px, FP32, Fast spatial heuristics.
+        """
+        profile = HardwareProfile()
+        try:
+            import torch
+            has_cuda = torch.cuda.is_available()
+            if requested_device.lower() == "cpu":
+                has_cuda = False
+
+            if has_cuda:
+                profile.has_cuda = True
+                dev_idx = 0
+                if requested_device.isdigit():
+                    dev_idx = int(requested_device)
+                profile.device_name = torch.cuda.get_device_name(dev_idx)
+                profile.device_str = f"cuda:{dev_idx}" if requested_device.isdigit() else "cuda"
+                profile.use_half = True
+                
+                # Check VRAM or high-end models
+                try:
+                    vram_gb = torch.cuda.get_device_properties(dev_idx).total_memory / (1024**3)
+                except Exception:
+                    vram_gb = 8.0
+
+                name_lower = profile.device_name.lower()
+                if vram_gb >= 12.0 or "5000" in name_lower or "4090" in name_lower or "3090" in name_lower or "a100" in name_lower or "v100" in name_lower:
+                    profile.is_high_end_gpu = True
+                    profile.imgsz = 640 # Full scale high-precision for firearm clarity
+                    profile.enable_pose_keypoints = True
+                else:
+                    profile.is_high_end_gpu = False
+                    profile.imgsz = 640
+                    profile.enable_pose_keypoints = True
+            else:
+                profile.has_cuda = False
+                profile.device_name = "CPU"
+                profile.device_str = "cpu"
+                profile.is_high_end_gpu = False
+                profile.imgsz = 416 # Lightweight scale to sustain 25-30 FPS on CPU without degradation
+                profile.use_half = False
+                profile.enable_pose_keypoints = False # Fast spatial arm reach heuristics on CPU
+        except Exception:
+            profile.has_cuda = False
+            profile.device_str = "cpu"
+            profile.imgsz = 416
+            profile.use_half = False
+            profile.enable_pose_keypoints = False
+
+        return profile
 
     @classmethod
     def load_from_file(cls, config_path: str = "config.yaml"):
@@ -105,6 +178,8 @@ class SystemConfig:
                 cfg.detector.person_conf_threshold = float(det["person_conf_threshold"])
             if "watch_state_tolerance" in det:
                 cfg.detector.watch_state_tolerance = float(det["watch_state_tolerance"])
+            if "device" in det:
+                cfg.detector.device = str(det["device"])
 
             vec = data.get("vector_verify", {})
             if "similarity_threshold" in vec:
@@ -131,10 +206,14 @@ class SystemConfig:
                 cfg.stream.default_source = str(strm["default_source"])
             if "rtsp_url" in strm:
                 cfg.stream.rtsp_url = str(strm["rtsp_url"])
+            if "async_capture" in strm:
+                cfg.stream.async_capture = bool(strm["async_capture"])
 
         except Exception as e:
             print(f"Warning: Could not parse configuration file '{target_path}': {e}")
 
+        # Compute hardware profile
+        cfg.hardware = cls.detect_hardware(cfg.detector.device)
         return cfg
 
     @staticmethod

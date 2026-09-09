@@ -30,7 +30,19 @@ class TrackedPerson:
     last_armed_timestamp: float = 0.0
 
 class PersonTracker:
-    def __init__(self):
+    def __init__(self, config=None, hardware_profile=None):
+        self.config = config
+        self.hardware = hardware_profile
+        
+        if self.hardware:
+            self.device = self.hardware.device_str
+            self.imgsz = self.config.imgsz if (self.config and self.config.imgsz > 0) else self.hardware.imgsz
+            self.half = self.hardware.use_half if (self.config and self.config.half is None) else (getattr(self.config, "half", False) or False)
+        else:
+            self.device = getattr(config, "device", "auto") if config else "auto"
+            self.imgsz = 480
+            self.half = False
+
         self.active_tracks: Dict[str, TrackedPerson] = {}
         self.reid_gallery: Dict[str, Dict] = {} # Persistent gallery with suspect metadata
         self.person_model = None
@@ -38,7 +50,7 @@ class PersonTracker:
         if ULTRALYTICS_AVAILABLE:
             try:
                 self.person_model = YOLO("yolo11m.pt")
-                logger.info("Loaded person tracking model 'yolo11m.pt' successfully.")
+                logger.info(f"Loaded person tracking model 'yolo11m.pt' on device={self.device} (imgsz={self.imgsz}).")
             except Exception as e:
                 logger.warning(f"Could not load yolo11m.pt for person tracking: {e}")
 
@@ -48,8 +60,21 @@ class PersonTracker:
         """
         if not isinstance(frame, dict) and self.person_model and not detections:
             try:
-                # Use ByteTrack with optimized 480px input resolution for smooth CPU tracking
-                results = self.person_model.track(frame, persist=True, tracker="bytetrack.yaml", classes=[0], conf=0.25, imgsz=480, verbose=False)
+                # Use ByteTrack with configured device and resolution
+                track_kwargs = {
+                    "persist": True, 
+                    "tracker": "bytetrack.yaml", 
+                    "classes": [0], 
+                    "conf": 0.25, 
+                    "imgsz": self.imgsz, 
+                    "verbose": False
+                }
+                if self.device != "auto":
+                    track_kwargs["device"] = self.device
+                if self.half and self.device != "cpu":
+                    track_kwargs["half"] = True
+
+                results = self.person_model.track(frame, **track_kwargs)
                 for result in results:
                     if result.boxes is not None:
                         for box in result.boxes:
@@ -59,7 +84,10 @@ class PersonTracker:
             except Exception as e:
                 # Fallback to standard detect if tracking backend has issue
                 try:
-                    results = self.person_model(frame, classes=[0], conf=0.35, verbose=False)
+                    pred_kwargs = {"classes": [0], "conf": 0.35, "verbose": False}
+                    if self.device != "auto":
+                        pred_kwargs["device"] = self.device
+                    results = self.person_model(frame, **pred_kwargs)
                     for result in results:
                         for box in result.boxes:
                             x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())

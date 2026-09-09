@@ -13,9 +13,20 @@ except ImportError:
     ULTRALYTICS_AVAILABLE = False
 
 class DetectionEnsemble:
-    def __init__(self, config: DetectorConfig):
+    def __init__(self, config: DetectorConfig, hardware_profile=None):
         self.config = config
+        self.hardware = hardware_profile
         self.model = None
+
+        # Determine device string and imgsz
+        if self.hardware:
+            self.device = self.hardware.device_str
+            self.imgsz = self.config.imgsz if self.config.imgsz > 0 else self.hardware.imgsz
+            self.half = self.hardware.use_half if self.config.half is None else self.config.half
+        else:
+            self.device = getattr(config, "device", "auto")
+            self.imgsz = 480
+            self.half = False
 
         # Load the best available firearm detection model (best_gun_26n(23).pt > best_gun_26.pt > best_gun_11m.pt)
         candidate_models = ["best_gun_26n(23).pt", "best_gun_26.pt", "best_gun_11m.pt", "best_gun.pt"]
@@ -29,22 +40,18 @@ class DetectionEnsemble:
             if selected_model_path:
                 try:
                     self.model = YOLO(selected_model_path)
-                    logger.info(f"Loaded primary firearm YOLO model from '{selected_model_path}' successfully.")
+                    logger.info(f"Loaded firearm YOLO model from '{selected_model_path}' on device={self.device} (imgsz={self.imgsz}, half={self.half}).")
                 except Exception as e:
                     logger.error(f"Failed to load YOLO model from '{selected_model_path}': {e}")
             else:
                 logger.warning(f"No firearm model file found (checked {candidate_models}). Running in mock/simulation mode.")
         else:
-            logger.warning("ultralytics package not installed. Primary detector running in mock mode. Run 'pip install ultralytics' to enable real YOLO predictions.")
+            logger.warning("ultralytics package not installed. Primary detector running in mock mode.")
 
     def detect(self, frame, threshold_offset: float = 0.0) -> Tuple[List[Dict], bool]:
         """
         Runs primary (YOLO best_gun.pt) and secondary detectors on the frame.
         Applies a threshold offset calculated by the Quality Gate.
-        
-        Returns:
-            List[Dict]: Confirmed candidate bounding boxes with confidence.
-            bool: Watch state flag indicating detector disagreement.
         """
         primary_threshold = max(0.05, self.config.primary_conf_threshold + threshold_offset)
         secondary_threshold = max(0.05, self.config.secondary_conf_threshold + threshold_offset)
@@ -55,8 +62,18 @@ class DetectionEnsemble:
         # 1. Run real model inference if available and frame is not a dictionary (mock)
         if self.model and not isinstance(frame, dict):
             try:
-                # Optimized inference with 480 input resolution for high CPU FPS & motion tracking
-                results = self.model(frame, conf=primary_threshold, iou=0.40, imgsz=480, verbose=False)
+                pred_kwargs = {
+                    "conf": primary_threshold,
+                    "iou": 0.40,
+                    "imgsz": self.imgsz,
+                    "verbose": False
+                }
+                if self.device != "auto":
+                    pred_kwargs["device"] = self.device
+                if self.half and self.device != "cpu":
+                    pred_kwargs["half"] = True
+
+                results = self.model(frame, **pred_kwargs)
                 for result in results:
                     boxes = result.boxes
                     if boxes is not None:

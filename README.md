@@ -47,7 +47,27 @@ HUMAN REVIEW & FEEDBACK LOOP (Operator clearance API protocol)
 
 ---
 
-## Installation & Setup
+## Hardware Auto-Profiling & Dynamic Scaling
+
+The pipeline automatically inspects your system hardware upon startup and adjusts the entire pipeline scale without requiring manual re-configuration:
+
+- **NVIDIA High-End GPU (RTX 5000, 4090, 3090, A100, etc.)**:
+  - **Full Scale Mode**: `imgsz=640` (or `960`), FP16 Half-Precision (`half=True`), full YOLO pose estimation keypoint verification.
+  - Zero lag high-FPS processing for maximum weapon detail.
+- **CPU / No GPU (Laptop / Low-resource systems)**:
+  - **Adaptive Downgrade Mode**: `imgsz=416`, FP32 precision, lightweight spatial arm-reach heuristics (skips heavy pose model to prevent CPU throttling & stutter).
+- **Asynchronous Threaded Frame Ingestion**:
+  - Automatically captures RTSP & Webcam frames in a background worker thread with `CAP_PROP_BUFFERSIZE = 1` and TCP transport to eliminate video lag, packet-loss corruption, and frame drops.
+
+> [!TIP]
+> If you have an NVIDIA GPU (e.g., RTX 5000) but PyTorch detects CPU, ensure CUDA-enabled PyTorch is installed:
+> ```bash
+> pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+> ```
+
+---
+
+## Configuration (`config.yaml`) & Setup
 
 ### 1. Create and Activate Virtual Environment
 
@@ -68,10 +88,24 @@ venv\Scripts\activate.bat
 
 ### 2. Install Dependencies
 
-With the virtual environment activated:
-
+#### For CPU Only:
 ```powershell
 pip install -r requirements.txt
+```
+
+#### For NVIDIA GPU (CUDA Acceleration) 🚀:
+To run models on GPU (RTX / GTX cards) for high FPS (30–60+ FPS):
+```powershell
+# 1. Install PyTorch with CUDA support (e.g. CUDA 12.1)
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+
+# 2. Install remaining dependencies
+pip install -r requirements.txt
+```
+
+Verify GPU availability:
+```powershell
+python -c "import torch; print('CUDA available:', torch.cuda.is_available(), '| GPU:', torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'None')"
 ```
 
 ---
@@ -87,10 +121,27 @@ python main.py --source 0
 ### Option B: Run Live RTSP CCTV Camera Feed
 
 ```powershell
-python main.py --source "rtsp://username:password@ip_address:port/h264"
+python main.py --source "rtsp://admin:password@192.168.1.101/Streaming/Channels/102"
 ```
 
-### Option C: Run Pipeline Simulation Test Harness
+### Option C: Run on Video File and Save Output
+
+```powershell
+python main.py --source "path/to/video.mp4" --save --output-dir "output"
+```
+
+### Option D: Explicit GPU / CPU Device Selection
+
+The pipeline automatically selects GPU if available. You can also explicitly specify the target device:
+```powershell
+# Force CUDA GPU 0
+python main.py --source 0 --device 0
+
+# Force CPU
+python main.py --source 0 --device cpu
+```
+
+### Option E: Run Pipeline Simulation Test Harness
 
 ```powershell
 python main.py
