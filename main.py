@@ -39,7 +39,7 @@ def run_simulation(pipeline):
     out_2 = pipeline.process_frame(frame_2, location_risk=0.8)
     print("\nFrame 2 (Weapon Concealed / Hidden - 0 Gun Detections):", json.dumps(out_2, indent=2))
 
-def run_live_feed(pipeline, source_input):
+def run_live_feed(pipeline, source_input, save_video=False, output_dir="output"):
     try:
         source = int(source_input)
     except ValueError:
@@ -61,11 +61,35 @@ def run_live_feed(pipeline, source_input):
     fps_frame_count = 0
     current_fps = 0.0
 
+    # Video Writer setup if saving is requested
+    writer = None
+    if save_video:
+        import os
+        os.makedirs(output_dir, exist_ok=True)
+        
+        # Determine output filename
+        if isinstance(source_input, str) and os.path.exists(source_input):
+            base_name = os.path.splitext(os.path.basename(source_input))[0]
+            out_filename = f"detected_{base_name}.mp4"
+        else:
+            out_filename = f"detected_output_{int(time.time())}.mp4"
+            
+        output_path = os.path.join(output_dir, out_filename)
+        
+        frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)) or 1280
+        frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) or 720
+        src_fps = cap.get(cv2.CAP_PROP_FPS)
+        save_fps = src_fps if src_fps and src_fps > 0 else 25.0
+        
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        writer = cv2.VideoWriter(output_path, fourcc, save_fps, (frame_width, frame_height))
+        logger.info(f"Saving output video to: {output_path}")
+
     try:
         while True:
             ret, frame = cap.read()
             if not ret:
-                logger.warning("Failed to grab frame.")
+                logger.warning("Failed to grab frame or reached end of video.")
                 break
 
             fps_frame_count += 1
@@ -143,6 +167,10 @@ def run_live_feed(pipeline, source_input):
             status_txt = f"FPS: {current_fps:.1f} | People: {len(persons)} | GUN: {gun_status}"
             cv2.putText(frame, status_txt, (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255) if gun_status == 1 else (0, 255, 0), 2)
 
+            # Write annotated frame to output video if writer is initialized
+            if writer is not None:
+                writer.write(frame)
+
             cv2.imshow("Gun Detection Pipeline", frame)
 
             if cv2.waitKey(1) & 0xFF == ord('q'):
@@ -150,6 +178,9 @@ def run_live_feed(pipeline, source_input):
 
     finally:
         cap.release()
+        if writer is not None:
+            writer.release()
+            logger.info("Output video successfully saved and closed.")
         cv2.destroyAllWindows()
         logger.info("Video capture released.")
 
@@ -158,6 +189,8 @@ if __name__ == "__main__":
     parser.add_argument("--source", type=str, default=None, 
                         help="Video source: '0' (Webcam), 'rtsp' (uses config.yaml RTSP URL), RTSP URL string, or 'sim' for simulation mode.")
     parser.add_argument("--rtsp", action="store_true", help="Shortcut flag to run configured RTSP stream from config.yaml")
+    parser.add_argument("--save", action="store_true", help="Save the annotated detection video to an output directory")
+    parser.add_argument("--output-dir", type=str, default="output", help="Directory where the processed video will be saved (default: 'output')")
     args = parser.parse_args()
 
     # Load configuration from config.yaml
@@ -176,6 +209,6 @@ if __name__ == "__main__":
             source = def_src
 
     if source is not None and str(source).lower() != "sim":
-        run_live_feed(pipeline, source)
+        run_live_feed(pipeline, source, save_video=args.save, output_dir=args.output_dir)
     else:
         run_simulation(pipeline)
