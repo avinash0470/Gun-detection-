@@ -40,8 +40,11 @@ class DetectorConfig:
 @dataclass
 class VectorVerifyConfig:
     clip_model_name: str = "ViT-B/32"
-    similarity_threshold: float = 0.70
-    hard_negative_threshold: float = 0.60
+    similarity_threshold: float = 0.50
+    hard_negative_threshold: float = 0.40
+    classifier_model: str = "mobilenet_v3_small" # lightweight deep learning classifier
+    enable_dl_classifier: bool = True
+    crop_padding_ratio: float = 0.20 # 20% spatial margin around bounding box to capture hand grip context
 
 @dataclass
 class TemporalConfig:

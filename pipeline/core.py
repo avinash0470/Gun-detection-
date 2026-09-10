@@ -42,7 +42,7 @@ class GunDetectionPipeline:
         self.quality_gate = FrameQualityGate(config.quality)
         self.tracker = PersonTracker(config.detector, hardware_profile=self.hardware)
         self.ensemble = DetectionEnsemble(config.detector, hardware_profile=self.hardware)
-        self.vector_verify = VectorVerification(config.vector)
+        self.vector_verify = VectorVerification(config.vector, hardware_profile=self.hardware)
         self.temporal_validator = TemporalValidator(config.temporal)
         self.context_checker = PoseContextChecker(hardware_profile=self.hardware)
         self.associator = PersonGunAssociation()
@@ -100,17 +100,29 @@ class GunDetectionPipeline:
             candidate_guns, watch_state = self.ensemble.detect(frame, threshold_offset)
 
         # =========================================================================
-        # STEP 4: CROP & VECTOR / FEATURE VERIFICATION
-        # Verify candidate gun crops against false alarms (bottles, phones, etc.)
+        # STEP 4: CROP + RESIZE + DEEP GUN CLASSIFIER (Gun vs Not-Gun)
+        # Verifies candidate gun crops against false alarms (bottles, phones, tools)
+        # Adds contextual padding so the classifier captures hand grip relationship
         # =========================================================================
         verified_guns = []
+        crop_pad_ratio = getattr(self.config.vector, "crop_padding_ratio", 0.20)
+
         for gun in candidate_guns:
             if not is_sim and frame is not None and hasattr(frame, "shape"):
                 gx1, gy1, gx2, gy2 = gun["bbox"]
                 h_img, w_img = frame.shape[:2]
-                gx1, gy1 = max(0, gx1), max(0, gy1)
-                gx2, gy2 = min(w_img, gx2), min(h_img, gy2)
-                gun_crop = frame[gy1:gy2, gx1:gx2] if (gx2 > gx1 and gy2 > gy1) else None
+                box_w = gx2 - gx1
+                box_h = gy2 - gy1
+                
+                # Contextual margin/padding
+                pad_x = int(box_w * crop_pad_ratio)
+                pad_y = int(box_h * crop_pad_ratio)
+                cx1 = max(0, gx1 - pad_x)
+                cy1 = max(0, gy1 - pad_y)
+                cx2 = min(w_img, gx2 + pad_x)
+                cy2 = min(h_img, gy2 + pad_y)
+
+                gun_crop = frame[cy1:cy2, cx1:cx2] if (cx2 > cx1 and cy2 > cy1) else None
                 vec_score, matched_cat = self.vector_verify.verify_crop(gun_crop)
             else:
                 crop_sim = frame.get("crop_sim_info", {}) if is_sim else {}
@@ -119,8 +131,13 @@ class GunDetectionPipeline:
             gun["vector_score"] = vec_score
             gun["vector_match"] = matched_cat
 
-            # Filter out objects strongly matching hard negatives
-            if matched_cat not in self.vector_verify.hard_negatives:
+            # Filter out non-firearm objects:
+            # Must have vector_score >= similarity_threshold AND matched_cat in firearm categories
+            is_negative = any(neg in matched_cat.lower() for neg in self.vector_verify.hard_negatives)
+            is_firearm_cat = matched_cat.lower() in [c.lower() for c in self.vector_verify.firearm_categories]
+            is_verified = (not is_negative) and is_firearm_cat and (vec_score >= self.config.vector.similarity_threshold)
+            
+            if is_verified:
                 verified_guns.append(gun)
 
         # =========================================================================

@@ -109,13 +109,18 @@ def run_live_feed(pipeline, source_input, save_video=False, output_dir="output")
 
     logger.info(f"Opening video source: {source}")
     
-    # Use Threaded Capture for RTSP or Webcams if configured
-    use_async = getattr(pipeline.config.stream, "async_capture", True)
+    # Use Threaded Capture ONLY for real-time live sources (RTSP or Webcam)
+    # For local recorded video files (.mp4, .avi, etc.), read sequentially so NO frames are skipped
+    is_live_stream = isinstance(source, int) or (isinstance(source, str) and (source.startswith("rtsp://") or source.startswith("rtsps://") or source.isdigit()))
+    use_async = getattr(pipeline.config.stream, "async_capture", True) and is_live_stream
+
     if use_async:
+        logger.info("Using ThreadedVideoCapture (bufferless real-time mode for live stream).")
         cap = ThreadedVideoCapture(source)
-        # Give thread a split second to pull first frame
         time.sleep(0.3)
     else:
+        if not is_live_stream:
+            logger.info("Processing recorded video file sequentially (every frame analyzed, zero frame skipping).")
         if isinstance(source, str) and (source.startswith("rtsp://") or source.startswith("rtsps://")):
             os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp|fflags;nobuffer|flags;low_delay|max_delay;500000"
             cap = cv2.VideoCapture(source, cv2.CAP_FFMPEG)
