@@ -11,6 +11,8 @@ __pycache__/
 
 # Recordings output
 recordings/
+output/
+my_results/
 
 # Evidence snapshots
 evidence/

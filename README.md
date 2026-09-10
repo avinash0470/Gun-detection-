@@ -1,48 +1,41 @@
 # Multi-Stage Gun Detection & Verification System
 
-An enterprise-grade, multi-stage real-time firearm detection and verification framework designed for camera arrays (Webcam / RTSP CCTV feeds).
+An enterprise-grade, multi-stage real-time firearm detection and verification framework designed for camera arrays (Webcam / RTSP CCTV feeds) and recorded video analytics.
 
 ## Pipeline Architecture
 
 ```text
-CAMERA (webcam / RTSP stream)
+CAMERA (Webcam / RTSP Stream / Video File)
    │
    ▼
-FRAME QUALITY GATE ── low light / blur / occlusion score → adjusts downstream thresholds
+FRAME PROCESSING & QUALITY GATE ── low light / blur / occlusion score → adjusts downstream thresholds
    │
    ▼
-PERSON DETECTION + TRACKING (yolo11m + ReID vector gallery for re-entry/occlusion recovery)
+PERSON DETECTION + PERSISTENT TRACKING (YOLO11m + ByteTrack / ReID appearance vectors)
    │
    ▼
-PARALLEL DETECTION ENSEMBLE (Primary: best_gun_11m.pt | Secondary)
-   │        → disagreement = "watch state" (prevents premature rejection)
+FIREARM DETECTION (YOLO: best_gun_26n(23).pt / best_gun_11m.pt)
+   │        → Candidate Bounding Box + Confidence score
    ▼
-Candidate Bounding Box + confidence
+CROP + CONTEXTUAL RESIZE (20% spatial padding margin to preserve hand grip context)
    │
    ▼
-Crop Object → CLIP Vector Verification (Firearm vs Hard-Negatives like bottles, phones, tools)
+DEEP LEARNING CROP CLASSIFIER (MobileNetV3)
+   │        → Gun Confirmation (Revolver / Rifle / Assault Rifle / Holster)
+   │        → Hard Negative Rejection (Cellphones, Drink Bottles, Computer Mice, Tools, Remotes)
+   ▼
+PERSON-GUN ASSOCIATION (Spatial reach & wrist proximity check)
    │
    ▼
-MULTI-FRAME TEMPORAL VALIDATION (persistent tracking across N frames, exposure duration timer)
+MULTI-FRAME TEMPORAL VALIDATION (Persistent tracking across sliding window N frames)
    │
    ▼
-POSE / CONTEXT CHECK (aimed, holstered, carried, concealed)
+THREAT RISK SCORING (Detection conf + pose context + location risk + track stability + vector score)
    │
    ▼
-PERSON-GUN ASSOCIATION (ReID-linked tracking)
-   │
-   ▼
-RISK SCORING (detection conf + pose + location risk + track stability + vector score)
-   │
-   ├── Low → Keep watching, log only
-   ├── Medium → SUSPECT state / Queue for human review
-   └── High/Danger → ARMED THREAT / DANGER ALERT (SHA-256 evidence hashing + instant alert)
-   │
-   ▼
-STICKY SUSPECT MEMORY (If weapon is concealed/hidden, suspect status is retained as "SUSPECT (WEAPON CONCEALED)")
-   │
-   ▼
-HUMAN REVIEW & FEEDBACK LOOP (Operator clearance API protocol)
+FINAL ALERT & VISUAL OVERLAYS
+   ├── Clean individual → Green Box (ID hidden)
+   └── ARMED SUSPECT (DANGER) → Bold Red Box (SHA-256 evidence hashing + snapshot logging)
 ```
 
 ---
@@ -56,8 +49,9 @@ The pipeline automatically inspects your system hardware upon startup and adjust
   - Zero lag high-FPS processing for maximum weapon detail.
 - **CPU / No GPU (Laptop / Low-resource systems)**:
   - **Adaptive Downgrade Mode**: `imgsz=416`, FP32 precision, lightweight spatial arm-reach heuristics (skips heavy pose model to prevent CPU throttling & stutter).
-- **Asynchronous Threaded Frame Ingestion**:
-  - Automatically captures RTSP & Webcam frames in a background worker thread with `CAP_PROP_BUFFERSIZE = 1` and TCP transport to eliminate video lag, packet-loss corruption, and frame drops.
+- **Adaptive Frame Ingestion**:
+  - **Live Streams (RTSP / Webcam)**: Multithreaded bufferless reader (`CAP_PROP_BUFFERSIZE = 1`) with TCP transport to eliminate video lag and packet corruption.
+  - **Recorded Videos (`.mp4`, `.avi`)**: Sequential frame-by-frame processing ensuring **zero frame skipping** so every single frame is thoroughly inspected.
 
 > [!TIP]
 > If you have an NVIDIA GPU (e.g., RTX 5000) but PyTorch detects CPU, ensure CUDA-enabled PyTorch is installed:
