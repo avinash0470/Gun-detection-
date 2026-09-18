@@ -14,7 +14,7 @@ FRAME PROCESSING & QUALITY GATE ── low light / blur / occlusion score → ad
 PERSON DETECTION + PERSISTENT TRACKING (YOLO11m + ByteTrack / ReID appearance vectors)
    │
    ▼
-FIREARM DETECTION (YOLO: best_gun_26n(23).pt / best_gun_11m.pt)
+FIREARM DETECTION (YOLO: best_gun_26n(23).pt)
    │        → Candidate Bounding Box + Confidence score
    ▼
 CROP + CONTEXTUAL RESIZE (20% spatial padding margin to preserve hand grip context)
@@ -114,8 +114,18 @@ python main.py --source 0
 
 ### Option B: Run Live RTSP CCTV Camera Feed
 
+Configure your camera stream URL in `config.yaml` (`stream.rtsp_url`):
+```yaml
+stream:
+  rtsp_url: "rtsp://<username>:<password>@<camera-ip>/Streaming/Channels/101"
+```
+Then run using the `--rtsp` flag:
 ```powershell
-python main.py --source "rtsp://admin:password@192.168.1.101/Streaming/Channels/102"
+python main.py --rtsp
+```
+Or specify a custom RTSP stream directly on the command line:
+```powershell
+python main.py --source "rtsp://<username>:<password>@<camera-ip>/Streaming/Channels/101"
 ```
 
 ### Option C: Run on Video File and Save Output
@@ -135,7 +145,15 @@ python main.py --source 0 --device 0
 python main.py --source 0 --device cpu
 ```
 
-### Option E: Run Pipeline Simulation Test Harness
+### Option E: Configure Location Threat Risk (`--location-risk`)
+
+Configure baseline location threat risk (between `0.0` for low risk like a gun range and `1.0` for high risk like a school lobby/bank):
+```powershell
+python main.py --source 0 --location-risk 0.8
+```
+Or set `stream.location_risk: 0.8` globally in `config.yaml`.
+
+### Option F: Run Pipeline Simulation Test Harness
 
 ```powershell
 python main.py

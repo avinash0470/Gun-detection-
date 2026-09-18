@@ -8,6 +8,8 @@ class TemporalValidator:
         self.config = config
         self.track_history: Dict[str, deque] = {}
         self.occlusion_counters: Dict[str, int] = {}
+        # Frames since track was last seen in active_track_ids
+        self.absent_counters: Dict[str, int] = {}
         # Timestamps for tracking long exposure to gun threat
         self.gun_first_seen_timestamp: Dict[str, float] = {}
 
@@ -19,8 +21,11 @@ class TemporalValidator:
         """
         results = {}
         now = time.time()
+        active_set = set(active_track_ids)
 
         for track_id in active_track_ids:
+            self.absent_counters.pop(track_id, None)
+
             if track_id not in self.track_history:
                 self.track_history[track_id] = deque(maxlen=self.config.history_frames)
                 self.occlusion_counters[track_id] = 0
@@ -51,11 +56,16 @@ class TemporalValidator:
                 "duration_sec": duration_sec
             }
 
-        dead_tracks = [t for t in self.track_history if t not in active_track_ids]
-        for dt in dead_tracks:
-            if self.occlusion_counters[dt] > self.config.occlusion_recovery_frames:
-                del self.track_history[dt]
-                del self.occlusion_counters[dt]
-                self.gun_first_seen_timestamp.pop(dt, None)
+        # Age out tracks completely absent from active_track_ids independent of gun occlusion
+        for dt in list(self.track_history.keys()):
+            if dt not in active_set:
+                self.absent_counters[dt] = self.absent_counters.get(dt, 0) + 1
+                if self.absent_counters[dt] > self.config.occlusion_recovery_frames:
+                    del self.track_history[dt]
+                    self.occlusion_counters.pop(dt, None)
+                    self.gun_first_seen_timestamp.pop(dt, None)
+                    del self.absent_counters[dt]
+            else:
+                self.absent_counters.pop(dt, None)
 
         return results

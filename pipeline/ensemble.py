@@ -28,12 +28,23 @@ class DetectionEnsemble:
             self.imgsz = 480
             self.half = False
 
-        # Load the best available firearm detection model (best_gun_26n(23).pt > best_gun_26.pt > best_gun_11m.pt)
-        candidate_models = ["best_gun_26n(23).pt", "best_gun_26.pt", "best_gun_11m.pt", "best_gun.pt"]
+        # Load firearm detection model: exclusively best_gun_26n(23).pt
+        gun_model_filename = "best_gun_26n(23).pt"
+        custom_model = getattr(self.config, "gun_model", None) or gun_model_filename
+        project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+
+        candidate_paths = [
+            custom_model,
+            os.path.join(project_root, os.path.basename(custom_model)),
+            os.path.join(project_root, gun_model_filename),
+            os.path.join(os.getcwd(), gun_model_filename),
+            gun_model_filename,
+        ]
+
         selected_model_path = None
-        for path in candidate_models:
-            if os.path.exists(path):
-                selected_model_path = path
+        for path in candidate_paths:
+            if path and os.path.exists(path):
+                selected_model_path = os.path.abspath(path)
                 break
 
         if ULTRALYTICS_AVAILABLE:
@@ -44,7 +55,7 @@ class DetectionEnsemble:
                 except Exception as e:
                     logger.error(f"Failed to load YOLO model from '{selected_model_path}': {e}")
             else:
-                logger.warning(f"No firearm model file found (checked {candidate_models}). Running in mock/simulation mode.")
+                logger.warning(f"Firearm model '{gun_model_filename}' not found. Running in mock/simulation mode.")
         else:
             logger.warning("ultralytics package not installed. Primary detector running in mock mode.")
 

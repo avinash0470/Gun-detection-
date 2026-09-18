@@ -77,8 +77,8 @@ class GunDetectionPipeline:
         candidate_guns = []
         watch_state = False
 
-        # If no persons are present in the frame, skip firearm detection to save CPU computation
-        if len(tracked_persons) == 0 and not is_sim:
+        # If require_person is enabled and no persons are present in the frame, skip firearm detection to save CPU computation
+        if self.config.detector.require_person and len(tracked_persons) == 0:
             return {
                 "persons": [],
                 "detections": [],
@@ -174,7 +174,7 @@ class GunDetectionPipeline:
                 track_id = assoc_pid
             else:
                 track_id = f"gun_unassociated_{uuid.uuid4().hex[:4]}"
-                is_temporally_valid = False
+                is_temporally_valid = True
 
             if is_sim:
                 is_temporally_valid = True
@@ -182,12 +182,22 @@ class GunDetectionPipeline:
                     gun_duration_sec = frame["sim_duration_sec"]
 
             # Pose context & wrist check
-            pose_info = self.context_checker.analyze_pose(frame, person_bbox, gun["bbox"])
-            pose_risk_factor = pose_info["pose_risk_factor"]
-            is_in_hand = pose_info.get("is_in_hand", False)
+            if person_bbox is not None:
+                pose_info = self.context_checker.analyze_pose(frame, person_bbox, gun["bbox"])
+                pose_risk_factor = pose_info["pose_risk_factor"]
+                is_in_hand = pose_info.get("is_in_hand", False)
+            else:
+                pose_info = {
+                    "context": "unattended",
+                    "pose_risk_factor": 0.5,
+                    "is_in_hand": False,
+                    "wrist_distance": 999.0
+                }
+                pose_risk_factor = 0.5
+                is_in_hand = False
 
-            # Strict Verification: Only confirm if firearm is in hand and associated with a person
-            if not is_sim and (not assoc_pid or not is_in_hand):
+            # Strict Verification: If require_person is enabled, only confirm if firearm is in hand and associated with a person
+            if self.config.detector.require_person and (not assoc_pid or not is_in_hand):
                 # Ignore unassociated objects or objects not held in hand
                 continue
 
@@ -222,9 +232,17 @@ class GunDetectionPipeline:
             else:
                 risk_result["level"] = "MEDIUM"
 
-            if assoc_pid:
+            if assoc_pid and is_in_hand:
                 self.tracker.mark_suspect(assoc_pid, is_armed=True)
                 active_threat_track_ids.add(assoc_pid)
+                if assoc_pid not in self.tracker.reid_gallery:
+                    self.tracker.reid_gallery[assoc_pid] = {
+                        "vector": None,
+                        "last_bbox": tracked_persons[assoc_pid].bbox if assoc_pid in tracked_persons else (0, 0, 0, 0),
+                        "is_suspect": True,
+                        "previously_armed": True,
+                        "last_armed_timestamp": time.time()
+                    }
 
             dispatch_outcome = self.alert_system.dispatch(track_id, risk_result, frame)
 
@@ -250,24 +268,19 @@ class GunDetectionPipeline:
             })
 
         # =========================================================================
-        # STEP 8: PERSON STATUS - ONLY ACTIVE ARMED INDIVIDUALS ARE SUSPECTS
-        # (Remove false positive sticky suspect memory when person has no gun)
+        # STEP 8: PERSON STATUS & CONCEALED WEAPON STICKY SUSPECT TRACKING
         # =========================================================================
         persons_payload = []
         for pid, p in tracked_persons.items():
-            # A person is ONLY suspect if they are ACTIVELY carrying a verified gun in the current frame
             is_currently_armed = pid in active_threat_track_ids
-            
-            if not is_currently_armed:
-                p.is_suspect = False
-                p.previously_armed = False
+            is_concealed = p.previously_armed and not is_currently_armed
 
             persons_payload.append({
                 "track_id": pid,
                 "bbox": p.bbox,
-                "is_suspect": is_currently_armed,
-                "previously_armed": False,
-                "is_concealed": False
+                "is_suspect": is_currently_armed or is_concealed,
+                "previously_armed": p.previously_armed,
+                "is_concealed": is_concealed
             })
 
         return {

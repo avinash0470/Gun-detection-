@@ -96,27 +96,38 @@ class PersonTracker:
                     logger.error(f"Error during person detection: {e2}")
 
         updated_tracks = {}
+        assigned_ids = set()
+
         for det in detections:
             bbox = det.get("bbox", (0, 0, 100, 200))
             reid_vec = self._extract_reid_vector(frame, bbox)
+            provided_id = det.get("track_id")
             
-            # Step 1: Check if the person matches an existing person in the persistent ReID gallery
-            matched_id, gallery_meta = self._match_reid(bbox, reid_vec)
-            
-            # Step 2: If no gallery match, try YOLO ByteTrack ID or assign consistent new ID
+            matched_id = None
+            gallery_meta = {}
+
+            # Step 1: Trust ByteTrack's unique motion tracking ID if provided and unclaimed
+            if provided_id and provided_id not in assigned_ids:
+                matched_id = provided_id
+                gallery_meta = self.reid_gallery.get(matched_id, {})
+
+            # Step 2: If no provided ID, match via IoU / ReID without colliding with already assigned IDs
             if matched_id is None:
-                provided_id = det.get("track_id")
-                if provided_id and provided_id not in self.reid_gallery:
-                    matched_id = provided_id
-                else:
-                    matched_id = f"person_{len(self.reid_gallery) + 1}"
-                is_suspect = False
-                previously_armed = False
-                last_armed_ts = 0.0
-            else:
-                is_suspect = gallery_meta.get("is_suspect", False)
-                previously_armed = gallery_meta.get("previously_armed", False)
-                last_armed_ts = gallery_meta.get("last_armed_timestamp", 0.0)
+                matched_id, gallery_meta = self._match_reid(bbox, reid_vec, exclude_ids=assigned_ids)
+
+            # Step 3: If still no match or collision, allocate a guaranteed unique ID
+            if matched_id is None or matched_id in assigned_ids:
+                new_idx = 1
+                while f"person_{new_idx}" in self.reid_gallery or f"person_{new_idx}" in assigned_ids:
+                    new_idx += 1
+                matched_id = f"person_{new_idx}"
+                gallery_meta = {}
+
+            assigned_ids.add(matched_id)
+
+            is_suspect = gallery_meta.get("is_suspect", False)
+            previously_armed = gallery_meta.get("previously_armed", False)
+            last_armed_ts = gallery_meta.get("last_armed_timestamp", 0.0)
 
             tracked_person = TrackedPerson(
                 track_id=matched_id,
@@ -222,17 +233,22 @@ class PersonTracker:
 
         return None
 
-    def _match_reid(self, bbox, reid_vec: Optional[np.ndarray]) -> Tuple[Optional[str], Dict]:
+    def _match_reid(self, bbox, reid_vec: Optional[np.ndarray], exclude_ids: Optional[set] = None) -> Tuple[Optional[str], Dict]:
         """
         Robust ReID matching across frames and cameras:
-        1. Continuous Track: High IoU (> 0.25) with recently active tracks.
-        2. Re-entry & Camera Change: Visual ReID cosine similarity (> 0.70) against persistent gallery.
+        1. Continuous Track: High IoU (> 0.25) with recently active tracks (excluding claimed IDs).
+        2. Re-entry & Camera Change: Visual ReID cosine similarity (> 0.82) against persistent gallery (suspects only, not claimed IDs).
         """
+        if exclude_ids is None:
+            exclude_ids = set()
+
         best_match_id = None
         highest_iou = 0.0
 
         # 1. IoU Trajectory Check against active tracks
         for tid, track in self.active_tracks.items():
+            if tid in exclude_ids:
+                continue
             iou = self._compute_iou(bbox, track.bbox)
             if iou > 0.25 and iou > highest_iou:
                 highest_iou = iou
@@ -242,18 +258,25 @@ class PersonTracker:
             meta = self.reid_gallery.get(best_match_id, {})
             return best_match_id, meta
 
-        # 2. Visual ReID appearance similarity against the entire persistent gallery
+        # 2. Visual ReID appearance similarity against inactive suspect gallery tracks
+        # STRICT CONSTRAINTS:
+        # - Never match an ID that is currently visible or claimed in this frame
+        # - Only re-identify suspects/previously armed tracks to avoid false mergers on uniforms/similar clothes
         if reid_vec is not None:
             highest_sim = 0.0
             matched_gallery_id = None
             matched_meta = {}
 
             for tid, meta in self.reid_gallery.items():
+                if tid in exclude_ids or tid in self.active_tracks:
+                    continue
+                if not (meta.get("is_suspect") or meta.get("previously_armed")):
+                    continue
+
                 gallery_vec = meta.get("vector")
                 if gallery_vec is not None and len(gallery_vec) == len(reid_vec):
                     sim = float(np.dot(reid_vec, gallery_vec))
-                    # Appearance similarity threshold for cross-camera / re-entry matching
-                    if sim > 0.68 and sim > highest_sim:
+                    if sim > 0.82 and sim > highest_sim:
                         highest_sim = sim
                         matched_gallery_id = tid
                         matched_meta = meta

@@ -1,7 +1,7 @@
 import json
 import os
 from dataclasses import dataclass, field
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 # Try importing PyYAML if installed; fallback to simple YAML parser if missing
 try:
@@ -29,18 +29,19 @@ class HardwareProfile:
 
 @dataclass
 class DetectorConfig:
+    gun_model: str = "best_gun_26n(23).pt"   # Firearm YOLO model weights file
     primary_conf_threshold: float = 0.25 # Gun detection confidence threshold
     secondary_conf_threshold: float = 0.20
     person_conf_threshold: float = 0.25  # Person detection confidence threshold
     watch_state_tolerance: float = 0.15
+    require_person: bool = False         # True: require gun to be held by person; False: detect standalone/unattended guns too
     device: str = "auto"                 # Device option: 'auto', 'cuda', 'cpu', '0', etc.
     imgsz: int = 0                       # 0 means auto-scaled by hardware profile
     half: Optional[bool] = None          # None means auto-decided
 
 @dataclass
 class VectorVerifyConfig:
-    clip_model_name: str = "ViT-B/32"
-    similarity_threshold: float = 0.50
+    similarity_threshold: float = 0.30
     hard_negative_threshold: float = 0.40
     classifier_model: str = "mobilenet_v3_small" # lightweight deep learning classifier
     enable_dl_classifier: bool = True
@@ -67,10 +68,11 @@ class RiskConfig:
 
 @dataclass
 class StreamConfig:
-    default_source: str = "0"
-    rtsp_url: str = "rtsp://admin:hikvision_ipcam@192.168.1.101/Streaming/Channels/101"
+    default_source: str = "sim"
+    rtsp_url: str = "rtsp://<user>:<password>@<camera-ip>/Streaming/Channels/101"
     async_capture: bool = True
     buffer_size: int = 1
+    location_risk: float = 0.0
 
 @dataclass
 class SystemConfig:
@@ -129,7 +131,7 @@ class SystemConfig:
                 profile.device_name = "CPU"
                 profile.device_str = "cpu"
                 profile.is_high_end_gpu = False
-                profile.imgsz = 416 # Lightweight scale to sustain 25-30 FPS on CPU without degradation
+                profile.imgsz = 640 # Lightweight scale to sustain 25-30 FPS on CPU without degradation
                 profile.use_half = False
                 profile.enable_pose_keypoints = False # Fast spatial arm reach heuristics on CPU
         except Exception:
@@ -173,6 +175,8 @@ class SystemConfig:
                     data = json.load(f) or {}
 
             det = data.get("detector", {})
+            if "gun_model" in det:
+                cfg.detector.gun_model = str(det["gun_model"])
             if "primary_conf_threshold" in det:
                 cfg.detector.primary_conf_threshold = float(det["primary_conf_threshold"])
             if "secondary_conf_threshold" in det:
@@ -181,6 +185,12 @@ class SystemConfig:
                 cfg.detector.person_conf_threshold = float(det["person_conf_threshold"])
             if "watch_state_tolerance" in det:
                 cfg.detector.watch_state_tolerance = float(det["watch_state_tolerance"])
+            if "require_person" in det:
+                val = det["require_person"]
+                if isinstance(val, str):
+                    cfg.detector.require_person = val.strip().lower() in ["true", "1", "yes"]
+                else:
+                    cfg.detector.require_person = bool(val)
             if "device" in det:
                 cfg.detector.device = str(det["device"])
 
@@ -211,6 +221,8 @@ class SystemConfig:
                 cfg.stream.rtsp_url = str(strm["rtsp_url"])
             if "async_capture" in strm:
                 cfg.stream.async_capture = bool(strm["async_capture"])
+            if "location_risk" in strm:
+                cfg.stream.location_risk = float(strm["location_risk"])
 
         except Exception as e:
             print(f"Warning: Could not parse configuration file '{target_path}': {e}")
@@ -240,10 +252,13 @@ class SystemConfig:
                         # strip inline comments
                         if "#" in val:
                             val = val.split("#")[0].strip()
-                        try:
-                            parsed_val = float(val) if "." in val else int(val)
-                        except ValueError:
-                            parsed_val = val
+                        if val.lower() in ["true", "false", "yes", "no"]:
+                            parsed_val = val.lower() in ["true", "yes"]
+                        else:
+                            try:
+                                parsed_val = float(val) if "." in val else int(val)
+                            except ValueError:
+                                parsed_val = val
                         if current_section:
                             result[current_section][key] = parsed_val
                         else:

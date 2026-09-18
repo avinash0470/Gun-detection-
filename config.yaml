@@ -1,15 +1,18 @@
 # Gun Detection Pipeline Configuration Settings
 
 stream:
-  default_source: "rtsp"            # Options: "0" (Webcam), "rtsp" (Uses rtsp_url below), or custom RTSP URL / video path
-  rtsp_url: "rtsp://admin:hikvision_ipcam@192.168.1.101/Streaming/Channels/101"
+  default_source: "sim"             # Options: "sim" (Simulation Test Harness), "0" (Webcam), "rtsp" (Uses rtsp_url below), or custom RTSP URL / video path
+  rtsp_url: "rtsp://<user>:<password>@<camera-ip>/Streaming/Channels/101"
   async_capture: true               # Multi-threaded bufferless capture for zero lag and zero quality drop
+  location_risk: 0.0                # Baseline location threat level: 0.0 (low risk, e.g. gun range) to 1.0 (high risk, e.g. school lobby)
 
 detector:
+  gun_model: "best_gun_26n(23).pt"       # Firearm YOLO model weights file
   primary_conf_threshold: 0.25      # Highly responsive threshold for fast motion & moving weapons
   secondary_conf_threshold: 0.25    # Secondary detector confidence threshold
   person_conf_threshold: 0.25       # Person detection confidence threshold (yolo11m.pt)
   watch_state_tolerance: 0.15       # Threshold difference triggering "Watch State"
+  require_person: false             # Set to true to detect guns ONLY when held by a person. Set to false to detect guns anywhere (unattended on tables/walls or in rooms without people).
   device: "auto"                    # Inference device: 'auto' (GPU if available, else CPU), 'cuda', 'cpu', '0'
 
 vector_verify:

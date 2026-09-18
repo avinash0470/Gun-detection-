@@ -24,7 +24,8 @@ class AlertSystem:
 
     def dispatch(self, track_id: str, risk_data: Dict[str, Any], frame) -> Dict:
         """
-        Processes threat outcomes without writing disk evidence images.
+        Processes threat outcomes, creates snapshots for high-risk threats,
+        and logs every event to disk.
         """
         level = risk_data.get("level", "LOW")
         score = risk_data.get("score", 0.0)
@@ -50,10 +51,14 @@ class AlertSystem:
             
         elif level in ["HIGH", "DANGER"]:
             evidence_hash = self._generate_evidence_hash(track_id, score, timestamp, frame)
+            snapshot_path = self._save_evidence_snapshot(track_id, timestamp, frame)
             event["action_taken"] = "IMMEDIATE_DANGER_ALERT_DISPATCHED"
             event["evidence_hash"] = evidence_hash
-            event["snapshot_path"] = None
+            event["snapshot_path"] = snapshot_path if snapshot_path else None
             self.audit_log.append(event)
+
+        # Write event to persistent JSONL log
+        self._write_event_log(event)
             
         return event
 
@@ -104,11 +109,14 @@ class AlertSystem:
     def _generate_evidence_hash(self, track_id: str, score: float, timestamp: float, frame) -> str:
         """
         Generates a SHA-256 hash representing unique metadata signature to verify chain of custody.
+        Uses exact frame byte content for image arrays (e.g. numpy arrays).
         """
         hasher = hashlib.sha256()
         hasher.update(f"{track_id}-{score}-{timestamp}".encode('utf-8'))
         if isinstance(frame, bytes):
             hasher.update(frame)
+        elif hasattr(frame, "tobytes"):
+            hasher.update(frame.tobytes())
         else:
             hasher.update(str(frame).encode('utf-8'))
         return hasher.hexdigest()
